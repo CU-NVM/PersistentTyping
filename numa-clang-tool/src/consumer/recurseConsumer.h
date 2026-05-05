@@ -3,28 +3,22 @@
 
 #include <clang/AST/ASTContext.h>
 #include <clang/AST/ASTConsumer.h>
+#include <clang/Frontend/CompilerInstance.h>
 #include <clang/Rewrite/Core/Rewriter.h>
+#include <vector>
 
-namespace clang
-{
-    class ASTContext;
-}
+class RecurseConsumer : public clang::ASTConsumer {
+public:
+    // Takes the full compiler instance so it can initialize recurseRewriter itself
+    explicit RecurseConsumer(clang::CompilerInstance &compiler);
 
-class RecurseConsumer : public clang::ASTConsumer 
-{
-    private:
-        //The rewriter object we use to write the changes in source code
-        clang::Rewriter rewriter;
-        //The container for the file IDs in the rewriters source manager
-        std::vector<llvm::StringRef> rewriterFileNames;
-        
-    public:
-        explicit RecurseConsumer(clang::Rewriter& TheReWriter, clang::ASTContext* context);
-        void includeNumaHeader(clang::ASTContext &context);
-        void WriteOutput(clang::SourceManager &SM);
-        virtual void HandleTranslationUnit( clang::ASTContext &context) override;
+    void includeNumaHeader(clang::ASTContext &context);
+    void WriteOutput(clang::SourceManager &SM);
+    void HandleTranslationUnit(clang::ASTContext &context) override;
+
+private:
+    clang::Rewriter recurseRewriter;
+    std::vector<llvm::StringRef> rewriterFileNames;
 };
-
-
 
 #endif
