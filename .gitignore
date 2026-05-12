@@ -2,6 +2,8 @@ numa-clang-tool/build/*
 numa-clang-tool/input/*
 numa-clang-tool/output/*
 numa-clang-tool/output2/* 
+Clobber-NVM/
+Clobber-NVM.tar.gz
 unified-memory-framework/build/*
 *.o
 *.txt

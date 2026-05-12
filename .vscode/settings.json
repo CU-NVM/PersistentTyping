@@ -111,5 +111,5 @@
         "utils_examples.h": "c",
         "mempolicy.h": "c"
     },
-    "cmake.sourceDirectory": "/home/kiwo9430/NUMATyping/unified-memory-framework/build/_deps/level-zero-loader-src/source/utils"
+    "cmake.sourceDirectory": "/home/kidus/PersistentTyping/numa-clang-tool"
 }
