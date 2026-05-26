@@ -15,7 +15,7 @@ using namespace pmem::obj;
 
 
 struct root {
-    p<int> counter;
+    persistent_ptr<int> counter;
 };
 
 int main() {
@@ -30,23 +30,23 @@ int main() {
 
     auto r = pop.root();
 
-    // transaction::run(pop, [&] {
-    //     // if(r->counter = nullptr) 
-    //     //     r->counter = make_persistent<int>(0);
-    //     r->counter = r->counter + 1;
-    // });
+    transaction::run(pop, [&] {
+        if(r->counter == nullptr) 
+            r->counter = make_persistent<int>(0);
+        r->counter = r->counter + 1;
+    });
 
     
 
-    // pid_t pid=fork();
-    // if(pid==0) {
-    //     transaction::run(pop, [&] {
-    //         r->counter = r->counter + 999;
-    //         abort();
-    //     });
-    // } else {
-    //     wait(nullptr);
-    // }
+    pid_t pid=fork();
+    if(pid==0) {
+        transaction::run(pop, [&] {
+            r->counter = r->counter + 999;
+            abort();
+        });
+    } else {
+        wait(nullptr);
+    }
     std::cout << "Counter value: " << r->counter << std::endl;
     pop.close();
     return 0;

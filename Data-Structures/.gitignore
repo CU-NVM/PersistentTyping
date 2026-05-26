@@ -1,8 +1,0 @@
-bin
-.metadata
-*~
-target/
-html/
-DSOxy
-.o
-.so

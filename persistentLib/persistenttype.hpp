@@ -72,24 +72,38 @@ public:
     T contents;
     using allocator_type = Alloc<T>;
 
-    inline T load()
+    inline T load() const
     __attribute__((always_inline)){
         return contents;
     }
 
+
     inline void store(T data)
     __attribute__((always_inline)){
+        int succ = pmemobj_tx_add_range_direct(&contents, sizeof(contents));
+        if(succ != 0) {
+            throw std::runtime_error("Failed to add range to transaction");
+        }
         contents = data;
     }
 
     persistent(){store((T)0);};
-    persistent(const T& data) : contents(data) {}
+    persistent(const T& data){store(data);};
 
     inline operator T&() {
         return contents;
     }
 
+    inline operator const T&() const {
+        return contents;
+    }
+
     inline T operator->() {
+        static_assert(std::is_pointer<T>::value, "operator-> is only valid for pointer types");
+        return load();
+    }
+
+    inline T operator->() const {
         static_assert(std::is_pointer<T>::value, "operator-> is only valid for pointer types");
         return load();
     }
@@ -127,5 +141,9 @@ public:
 
     template<typename... Args>
     explicit persistent(Args&&... args) : T(std::forward<Args>(args)...) {}
+
+    /* These new and deleteoverloadings will only exist before clang tool transformation, pmem_alloc will be called from 
+    within the specialized template */
+
 };
 #endif
