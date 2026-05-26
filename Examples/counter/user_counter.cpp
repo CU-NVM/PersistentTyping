@@ -28,7 +28,7 @@
 //
 // Compare with: ./transformed_user_counter (which DOES persist).
 
-#include "../../persistentLib/persistenttype.hpp"
+#include "persistenttype.hpp"
 #include <iostream>
 
 int main() {

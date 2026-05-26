@@ -35,7 +35,7 @@
 //
 // Compare with: ./transformed_user_hanoi (which DOES persist).
 
-#include "../../persistentLib/persistenttype.hpp"
+#include "persistenttype.hpp"
 #include <iostream>
 
 // ---------- The user's data types (regular C++) ----------

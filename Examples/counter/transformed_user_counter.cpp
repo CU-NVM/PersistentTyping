@@ -31,7 +31,7 @@
 //
 // Compare with: ./user_counter (which compiles but always prints 1).
 
-#include "../../persistentLib/persistenttype.hpp"
+#include "persistenttype.hpp"
 #include <iostream>
 
 // ---------------------------------------------------------------------------

@@ -33,7 +33,7 @@
 //
 // Compare with: ./transformed_user_stack (which DOES persist).
 
-#include "../../persistentLib/persistenttype.hpp"
+#include "persistenttype.hpp"
 #include <iostream>
 
 // ---------- The user's data types (regular C++) ----------
@@ -49,7 +49,7 @@ class Stack {
 public:
     Node* top  = nullptr;
     int   size = 0;
-
+    Stack(int size = 0) : size(size) {}
     void push(int v) {
         Node* n = new Node(v);
         n->next = top;
@@ -71,7 +71,7 @@ public:
 // ---------- The user's program ----------
 
 int main() {
-    persistent<Stack>* s = new persistent<Stack>();
+    persistent<Stack>* s = new persistent<Stack>(0);
 
     pmem::obj::transaction::run(pmem_pool(), [&]{
         s->push(10);

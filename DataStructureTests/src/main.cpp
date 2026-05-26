@@ -8,7 +8,7 @@
 #include "Stack.hpp"
 #include <iostream>
 
-#include "../../persistentLib/persistenttype.hpp"
+#include "persistenttype.hpp"
 
 using namespace pmem::obj;
 int main(int argc, char* argv[]) {

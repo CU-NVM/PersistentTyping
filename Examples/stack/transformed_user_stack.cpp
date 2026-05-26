@@ -33,7 +33,7 @@
 //   ./transformed_user_stack    # stack: 30 20 10 30 20 10 (size=6)
 //   ./transformed_user_stack    # stack: 30 20 10 30 20 10 30 20 10 (size=9)
 
-#include "../../persistentLib/persistenttype.hpp"
+#include "persistenttype.hpp"
 #include <iostream>
 
 // ---------- Original user types (carried through unchanged) ----------

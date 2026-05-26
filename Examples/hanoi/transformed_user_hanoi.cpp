@@ -43,7 +43,7 @@
 //   ./transformed_user_hanoi    # solves: s2 = [1 2 3]
 //   ./transformed_user_hanoi    # same state — puzzle is done, no re-solve
 
-#include "../../persistentLib/persistenttype.hpp"
+#include "persistenttype.hpp"
 #include <iostream>
 
 // ---------- Original user types (carried through unchanged) ----------
