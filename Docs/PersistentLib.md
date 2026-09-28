@@ -228,6 +228,73 @@ Root* root = pmem_root<Root>();
 persistent<Stack>* s = pmem_get_or_create<persistent<Stack>>(root->stack);   // no-arg ctor
 ```
 
+### `pmem_string`
+
+A variable-length, null-terminated string whose characters live in pmem. Header: [`persistentLib/pmem_string.hpp`](../persistentLib/pmem_string.hpp).
+
+```cpp
+struct HashNode {
+    pmem_string key;      // instead of `char* key`
+    persistent<int> count;
+};
+
+pmem::obj::transaction::run(pmem_pool(), [&]{
+    node->key = "key12345";           // assign from const char*
+});
+node->key.c_str();                    // read-only C-string view
+node->key == "key12345";              // comparison, no strcmp at the call site
+```
+
+Layout is a `PMEMoid` plus a `size_t` length — 24 bytes, with the characters in a separately allocated pmem buffer. `size()` excludes the null terminator; `c_str()` on an empty string returns `""` rather than null.
+
+**Why this exists rather than `pmem_ptr<persistent<char>>`.** That combination would already get two of the three things right: `persistent<char>::operator new[]` puts the buffer in pmem, and the `pmem_ptr` field stores a restart-stable OID. What it cannot do cheaply is *log* the writes. Each character assignment would go through `persistent<char>::store()`, i.e. one `pmemobj_tx_add_range_direct` per byte — each doing a range lookup, appending an undo entry with tens of bytes of metadata, and flushing. Copying a 9-character key would cost 9 undo entries to protect 9 bytes. `pmem_string` snapshots its own two fields once and bulk-`memcpy`s the payload instead. It also carries a length, so no `strlen` scan on every access, and gives read-only C-string interop.
+
+Note the general principle: per-element logging is right when elements are *meaningful units* — a `pmem_ptr` in a bucket array, a `persistent<int>` counter — because each update is a real change worth its own undo entry. It only becomes pathological when the element is one byte of a bulk copy. This is why arrays of pointers (e.g. a hash table's bucket array) are well served by nested `pmem_ptr` composition and need no special type, while strings do.
+
+**The core invariant.** If `this` lives in pmem then we are necessarily inside a transaction, because `snapshot_if_pmem()` throws otherwise. Therefore the `pmem_alloc` inside `assign()` is a *transactional* allocation, and writes into that fresh buffer need no undo-log entry at all: if the transaction aborts, the allocation itself is rolled back, so those bytes never existed. Only `data_` and `size_` are pre-existing pmem bytes, and only they are snapshotted.
+
+**Statement order in `assign()` is load-bearing.** Three constraints pin it:
+
+1. `snapshot_if_pmem()` runs first, so that outside a transaction the throw happens *before* anything is allocated — no leak on the error path.
+2. Allocate and `memcpy` *before* `release()`, so that self-assignment (`s.assign(s.c_str())`) does not read a buffer it has already freed. The original ordering released first and survived testing only because the allocator happened to hand back the same block; it was a genuine use-after-free.
+3. `release()` only once the new payload is safely in place.
+
+**The destructor deliberately does not clear the fields.** `release()` nulls `data_` and zeroes `size_`, which are unlogged pmem writes — fine in `assign()`, where the caller has already snapshotted, but wrong in a destructor. If the enclosing transaction later aborts, PMDK undoes the `tx_free` of both the payload and the enclosing object, but the nulling was never in the undo log, leaving a restored object pointing at nothing while its restored payload leaks. Since the object is being destroyed anyway, the destructor just frees the payload.
+
+**`operator new`/`delete` are required, not optional.** Without them, `new pmem_string(...)` uses the global `operator new` and lands on the DRAM heap. `pmemobj_oid()` on a DRAM pointer returns `OID_NULL`, so storing it into a `pmem_ptr` slot silently does nothing and the string reads back empty on every subsequent run — a silent failure, not a crash. Instances embedded as fields don't need this (they live wherever the enclosing object lives), but standalone allocation must work too.
+
+**Zero-initialisation dependence.** `pmem_root<T>()` hands back zeroed pool memory and never runs constructors, so a `pmem_string` embedded in a root struct is never constructed. It works only because the default state (`data_ == OID_NULL`, `size_ == 0`) is all-zero bytes, which the zeroed memory already satisfies. Any future member whose default state is not all-zero would silently break root-embedded instances.
+
+**Current limitations.** Copy construction and copy assignment are deleted, since two instances sharing an OID would double-free; use `assign(other.c_str())`. There is no small-string optimisation, so every non-empty string costs one pmem allocation — for short keys like YCSB's, an inline buffer for strings under ~23 bytes would remove that cost entirely, but correctness came first and the optimisation should be driven by a profile. Mutation is whole-string replacement only; there is no `append`, `resize`, or `operator[]`.
+
+#### Users do not write `pmem_string` — the tool infers it
+
+The user declares an ordinary `char*` or `std::string` field; `utils::wrapFieldType` maps it to `pmem_string`, alongside the existing `U*` → `pmem_ptr<persistent<U>>` and fundamental → `persistent<F>` mappings. `utils::isStringLikeType` matches `char*`, `const char*`, and `std::basic_string<char, ...>`, and is checked *before* the pointer branch since `char*` is itself a pointer.
+
+Two pieces make this work with a small amount of rewriting rather than a lot.
+
+**Reads need no rewriting at all**, because of the implicit conversion:
+
+```cpp
+operator const char*() const { return c_str(); }
+```
+
+`strcmp(node->key, word)`, `std::cout << node->key`, and any parameter taking `const char*` then work unchanged. This is safe in a way the deleted `persistent<T>::operator T&()` was not: it is `const`, so nothing can be written through it to bypass the undo log. Verified free of ambiguity against `operator==`, ostream insertion, and the C string functions.
+
+**Writes must be rewritten**, and the implicit conversion is exactly what makes this mandatory rather than optional. Of the three C-string write idioms, only one fails to compile on its own:
+
+| Original | Without rewriting | After `CStringIdiomRewriter` |
+|---|---|---|
+| `key = new char[strlen(w)+1];` | **compiles**, copies from an uninitialised DRAM buffer and leaks it | statement removed |
+| `strcpy(key, w);` | compile error (the only loud one) | `key = w;` |
+| `delete[] key;` | **compiles**, hands the pmem payload to the DRAM `delete[]` | statement removed |
+
+Two of the three would otherwise be silent corruption. The visitor identifies its targets by the field's *original* declared type — it runs against the unmodified AST, where the field is still `char*` — so it needs no communication from `wrapFieldType`.
+
+`strncpy` is deliberately not handled: dropping the length argument would silently change truncation and null-padding semantics, so it is left to fail loudly. `strcat`, `sprintf`, and element-wise `key[i] = c` are likewise unsupported, since `pmem_string` has no in-place mutation. A `std::vector<char*>` collecting such fields will also fail, because the conversion yields `const char*` — a genuine user-code adjustment rather than something to paper over with a `const_cast`.
+
+The [`kvnode/`](../kvnode/) benchmark is the regression test for this path: a `HashNode`-shaped class with a `char*` key exercising all three idioms, which persistifies, compiles, and accumulates state across runs.
+
 ### Low-level primitives (`pmem_alloc`, `pmem_free`, `pmem_contains`)
 
 These are used internally by `persistent<T>::operator new` and `pmem_ptr<T>`. You shouldn't normally call them directly, but they're available:
@@ -487,7 +554,7 @@ Options: explicit deep-copy through a different code path; refuse such crossover
 
 We allow `persistent<T>*` as a transient DRAM handle to a pmem object. NV-Heaps (Coburn et al., ASPLOS '11) discusses safety properties for this pattern — things like garbage collection or restricted pointer types. We haven't read the paper deeply yet; might or might not adopt their model.
 
-### 7.5 Allocator's `allocate(n)` semantics for primitive `operator new`
+### 7.5 ~~Allocator's `allocate(n)` semantics for primitive `operator new`~~ — RESOLVED 2026-08-11, see §7.9
 
 The primitive specialization's `operator new` does:
 ```cpp
@@ -495,11 +562,11 @@ return alloc.allocate(sz);   // where sz is sizeof(persistent<T>)
 ```
 but `PersistentAllocator::allocate(n)` returns `n * sizeof(T)` bytes. So this overallocates by a factor of `sizeof(T)`. Not a correctness bug given how the bytes are used (we only write to the first `sizeof(T)` bytes), but it's wasteful and the code reads wrong. Pending cleanup.
 
-### 7.6 Read barriers
+### 7.6 ~~Read barriers~~ — write side RESOLVED 2026-08-11, see §7.8
 
-`operator T&` returns a reference, which lets the caller modify the contents bypassing `store()`. We don't currently protect against this. A read barrier would catch the case but at considerable API cost. For now, document the constraint and trust the typer not to emit such code.
+The mutable `operator T&()` described here no longer exists, so the caller can no longer modify contents through the returned reference. What remains open is a genuine *read* barrier: `operator const T&() const` hands back a reference for reading, and we have no hook on the read path. That matters only if a future design needs one (e.g. read-set tracking for a different concurrency model); the crash-consistency story does not depend on it.
 
-### 7.7 Const-correctness of `persistent<T>` accessors
+### 7.7 Const-correctness of `persistent<T>` accessors — partly RESOLVED 2026-08-11, see §7.8
 
 `persistent<T>::operator T&` and `persistent<T>::load()` (primitive specialization) are *not* const-qualified. So they can't be invoked on a `const persistent<T>` instance — which is exactly the situation inside a `const` method that has a `persistent<T>` field. For example:
 
@@ -517,6 +584,28 @@ public:
 Walking through a `pmem_ptr<>` (whose `operator->` *is* const-correct) sidesteps this because `pmem_ptr<T>::operator->()` returns a non-const `T*`, even when called on a const `pmem_ptr`. But direct member access from a const method bumps into the missing overload.
 
 The fix is a 2-line library change — add `operator const T&() const` and `T load() const` to the primitive specialization. Discovered during [`Examples/stack/transformed_user_stack.cpp`](../Examples/stack/transformed_user_stack.cpp); both examples currently work around it by not printing the size field from inside a const method.
+
+### 7.8 ~~Unlogged writes through the mutable `operator T&()`~~ — RESOLVED 2026-08-11
+
+Writes to a `persistent<T>` scalar used to be able to escape the undo log entirely. `count++` on a `persistent<int>` field found no member `operator++`, so overload resolution fell back to converting via `operator T&()` — handing out a raw `int&` straight at `contents` — and applied the built-in `++` to that reference. `store()` never ran, so `pmemobj_tx_add_range_direct` never ran, so PMDK had no backup and the write could not be rolled back on abort. The same held for `+=`, `--`, and every other compound assignment.
+
+This was benign-looking in the small benchmarks (Stack's `size++`) but would have made the crash-consistency claim false on any real workload: YCSB does `count++` on every insert and update.
+
+Two changes fixed it, both in the primitive specialization:
+
+1. **Member operators added** — `operator++`/`--` (prefix and postfix), and `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`, each implemented as `store(load() op v)`. C++ overload resolution prefers a member operator over conversion-then-builtin, so `count++` now calls the logged path. Defining the full set unconditionally is safe even for pointer and floating-point `T`: member functions of a class template instantiate lazily, so `persistent<Node*>::operator%=` is never compiled unless someone actually writes `ptr %= x`.
+
+2. **The mutable `operator T&()` was removed**, leaving only `operator const T&() const`. This closes the escape hatch rather than merely routing around it — `int& r = *p;` is now a compile error (*no viable conversion from `persistent<int>` to `int`*), and every mutation must go through `operator=`, a compound operator, or `++`/`--`. All four benchmarks still compile and persist unchanged, which suggests the mutable conversion was not carrying its weight.
+
+The resulting property is worth stating precisely: for scalar and pointer `T`, unlogged writes to a `persistent<T>` are now **inexpressible**, not merely discouraged.
+
+Note this also resolves the read-side half of §7.7 — `operator const T&() const` means reads from `const` methods work — while making the write-side moot, since there is no longer a mutable conversion to be missing.
+
+### 7.9 ~~`operator new` passed bytes where a count was expected~~ — RESOLVED 2026-08-11
+
+This is §7.5, found independently and fixed. `persistent<T>::operator new` and `operator new[]` receive a size in **bytes**, but forwarded it to `PersistentAllocator::allocate(n)`, which expects a **count** and multiplies by `sizeof(T)` internally. The byte count was therefore scaled a second time: `new persistent<int>` requested 4 bytes and allocated 16; every `double` allocation wasted 8×. Over-allocation rather than corruption, which is why nothing had broken — and it was exactly correct for `sizeof(T) == 1`, which is why the `persistent<char>` path we were considering for strings would have looked fine.
+
+All four now call `pmem_alloc(sz, alignof(T))` / `pmem_free(ptr)` directly, which also makes the library consistent with the `operator new`/`delete` pair the Clang tool emits into generated specializations.
 
 ---
 

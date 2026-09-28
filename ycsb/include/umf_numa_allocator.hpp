@@ -21,6 +21,7 @@
 #include <umf/providers/provider_level_zero.h>
 #include <umf/providers/provider_os_memory.h>
 
+#include "numa_nodemap.hpp"
 #include <numa.h>
 #include <numaif.h>
 #include <stdio.h>
@@ -30,6 +31,12 @@
 #include <mutex>
 
 #include <iostream>
+
+#ifndef NUMA_NODE_NUM
+    #warning "NUMA NODES for je malloc handle is set to 2."
+    #define NUMA_NODE_NUM 2
+#endif
+
 
 // Function to create a memory provider which allocates memory from the specified NUMA node
 // by using umfMemspaceCreateFromNumaArray
@@ -42,7 +49,8 @@ int createMemoryProviderFromArray(umf_memory_provider_handle_t *hProvider,
 
     // Create a memspace - memspace is a list of memory sources.
     // In this example, we create a memspace that contains single numa node;
-    result = umfMemspaceCreateFromNumaArray(&numa, 1, &hMemspace);
+    unsigned phys = numa_node_map(numa);
+    result = umfMemspaceCreateFromNumaArray(&phys, 1, &hMemspace);
     if (result != UMF_RESULT_SUCCESS) {
         fprintf(stderr, "umfMemspaceCreateFromNumaArray() failed.\n");
         return -1;
@@ -73,19 +81,28 @@ error_memspace:
     return ret;
 }
 
-static constexpr unsigned NUM_NODES = 2;
-static umf_memory_provider_handle_t NUMA_HANDLES[NUM_NODES]={};
-umf_memory_pool_handle_t jemalloc_pool[NUM_NODES]={};
-    
-static std::mutex umf_lock[NUM_NODES];
+static constexpr unsigned NUM_NODES = NUMA_NODE_NUM;
+static_assert(NUM_NODES <= UMF_JE_MAX_POOLS,
+              "NUMA_NODE_NUM exceeds UMF_JE_MAX_POOLS; raise it in pool_jemalloc.h");
 
-__attribute__((constructor))
-void umf_alloc_init() {
-    void* ptr = NULL;
+// inline (not plain) globals: this header is included from several TUs, and one
+// shared set of pools is required -- pool slot k must mean logical node k.
+inline umf_memory_provider_handle_t NUMA_HANDLES[NUM_NODES]={};
+inline umf_memory_pool_handle_t jemalloc_pool[NUM_NODES]={};
+
+inline void umf_alloc_init() {
+    // Each including TU registers its own constructor (see below), so guard the
+    // body -- creating the pools twice would hand out two slots per node.
+    static bool initialized = false;
+    if (initialized) { return; }
+    initialized = true;
+
     umf_memspace_handle_t hMemspace= NULL;
     umf_mempolicy_handle_t hPolicy = NULL;
     for (unsigned i = 0; i < NUM_NODES; ++i) {
-        auto r = umfMemspaceCreateFromNumaArray(&i, 1, &hMemspace);
+
+        unsigned phys = numa_node_map(i);
+        auto r = umfMemspaceCreateFromNumaArray(&phys, 1, &hMemspace);
         if (r != UMF_RESULT_SUCCESS) {
             throw std::runtime_error("Could not create space");
         }
@@ -103,54 +120,33 @@ void umf_alloc_init() {
         }
         umfMempolicyDestroy(hPolicy);
         umfMemspaceDestroy(hMemspace);
-        // size_t sz;
-        // unsigned narenas;
-        // bool tcache;
-        // size_t tcache_max;
-    
-        // sz = sizeof(unsigned);
-        // printf("sz: %zu\n", sz);  
-        // mallctl("opt.narenas", &narenas, &sz, NULL, 0);
-       
-        // mallctl("opt.tcache_max", &tcache_max, &sz, NULL, 0);
-        // printf("Number of arenas: %u\n", narenas);
-        // printf("Thread cache enabled: %s\n", tcache ? "yes" : "no");
-        // printf("Thread cache max: %zu\n", tcache_max);
-
-        // ptr = umfPoolAlignedMalloc(jemalloc_pool[i], 100*1024*1024, sizeof(char));
-        // printf("Allocated %u bytes\n", 100*1024*1024);
-        // if(ptr == NULL){
-        //     throw std::runtime_error("Could not allocate pool");
-        // }
-        // for(int j = 0; j < 100*1024*1024; j+=4096){
-        //     ((char*)ptr)[j] = 'a';
-        // }
-        // if(umfPoolFree(jemalloc_pool[i], ptr) != UMF_RESULT_SUCCESS){
-        //     throw std::runtime_error("Could not free pool");
-        // }
     }
 }
 
+// Internal linkage, so each TU gets its own .init_array entry; the guard inside
+// umf_alloc_init() makes the redundant calls no-ops. Keeping the pools up before
+// main() matters because static initializers may already allocate numa<T,k>.
+namespace {
+__attribute__((constructor)) void umf_alloc_ctor() { umf_alloc_init(); }
+}
 
-void* umf_alloc(unsigned NodeId, size_t size, size_t allign){
-    // umf_lock[NodeId].lock();
-    void *ptr = NULL;
-    //ptr = umfPoolMalloc(jemalloc_pool[NodeId], size);
-    ptr = umfFastJemallocMalloc(jemalloc_pool[NodeId], size);
-    // printf("Allocated %u bytes\n", size);
+
+// Pools are created in logical-node order in umf_alloc_init(), so the pool slot
+// the fast path wants is exactly NodeId. Taking the slot form skips the
+// hPool->pool_priv->pool_slot chase; with NodeId a compile-time constant (which
+// it is in every numa<T,k> specialization the numa-clang-tool generates) this
+// collapses to a TLS bit test plus mallocx() with a constant flag word.
+//
+// These must be inline: they used to be ordinary out-of-line definitions in a
+// header, which cost a call per allocation and blocked constant folding.
+inline void* umf_alloc(unsigned NodeId, size_t size, size_t allign){
+    (void)allign; // jemalloc's size classes already satisfy natural alignment
+    void *ptr = umfFastJemallocMallocSlot(NodeId, size);
     assert(ptr && "Could not allocate pool");
-    //umf_result_t ret = umfMemoryProviderAlloc(NUMA_HANDLES[NodeId], size, allign, &ptr);
-    // umf_lock[NodeId].unlock();
-    // if (ret==UMF_RESULT_SUCCESS){
-    //     throw std::runtime_error("Could not allocate pool");
-    // }
     return ptr;
 }
 
-void umf_free(unsigned NodeId,void* ptr){
-    if(umfFastJemallocFree(jemalloc_pool[NodeId], ptr) != UMF_RESULT_SUCCESS){
-        throw std::runtime_error("Could not free pool");
-    }
-    //umfMemoryProviderDestroy(NUMA_HANDLES[NodeId]);
+inline void umf_free(unsigned NodeId, void* ptr){
+    umfFastJemallocFreeSlot(NodeId, ptr);
 }
 #endif

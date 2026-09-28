@@ -1,77 +1,151 @@
-# NUMA TYPING 
-A compiler tool project for recursivley typing NUMA annotated objects for increased local accesses. This repository contains a data structure benchmark which has numa data structures and numa threads that access these data structures. The benchmark reports thread throughput of different configurations of these data structures.
+# Persistent Typing
 
+A C++ template library + Clang source-to-source transformation tool that takes
+ordinary user-written code and automatically rewrites it into a fully
+crash-consistent, PMDK-backed persistent program. Inspired by the recursive
+`numa<T, NodeID>` typing system; targets persistent memory (Intel Optane,
+kernel-emulated pmem) via `libpmemobj`.
 
-## How to run
-1. If you are on the NERSC machines, navigate to the `$SCRATCH` directory. Make sure you have cloned this repo in `$SCRATCH`. If not, stay in `$HOME`
+The high-level workflow:
 
-2. If you are not on NERSC machines, skip this step. If you are on the NERSC machines, you will start by loading the python module.Then run these two scripts in order. The first loads necessary modules, and the later adjusts environment variables.
-    ```shell
-        module load python
-        eval $(python3 load.py)
-        eval $(python3 env.py)
-    ```
+```
+   user-written .cpp                   automatically transformed .cpp
+   ─────────────────                   ──────────────────────────────
+   persistent<Stack>* s =       ──>    pmem_get_or_create<persistent<Stack>>(__root->s);
+       new persistent<Stack>();
+                                       template<> class persistent<Stack> {
+   class Stack {                          pmem_ptr<persistent<Node>> top;
+       Node* top;                         persistent<int> size;
+       ...                                ...
+   };                                     void push(int v) {
+                                              pmem::obj::transaction::run(pmem_pool(), [&]{
+                                                  persistent<Node>* n = new persistent<Node>(v);
+                                                  n->next = top.get();
+                                                  ...
+                                              });
+                                          }
+                                       };
+```
 
-3. Navigate to the tool and compile it. 
-    ```shell 
-        cd numa-clang-tool
-        mkdir build
-        cd build 
-        cmake ..
-        cmake --build .
-    ```
-    NOTE: If for some reason compilation gives you trouble, pass the `-DHELP=ON` command when you run. There are multiple ways to specify common library paths
-          If for some reason you have to find dependencies in your system, use `find`. Example usage `$ find /usr -name libLLVM*.so`
-3. Navigate to the custom memory allocator and compile it.
-    ```shell
-        cd unified-memory-framework
-        mkdir build
-        cd build
-        cmake ..
-        cmake --build .
-    ```
+The result is a binary that:
+- Allocates user objects in persistent memory.
+- Wraps every write in a PMDK transaction so partial failures roll back.
+- Persists state across process invocations (and across crashes).
 
-## NUMAFYING
+## Repository layout
+
+```
+~/PersistentTyping/
+  persistentLib/         The C++ template library:
+                           persistenttype.hpp  persistent<T> template
+                           pmem_allocator.hpp  pmem_ptr<T>, pmem_get_or_create,
+                                               pmem_root, pmem_alloc/free.
+
+  persist-clang-tool/    The Clang tool (LibTooling) that does the rewriting.
+                           src/actions, src/consumer, src/transformer
+                           src/transformer/recursePersistentTyper.{h,cc}
+                           src/transformer/rootSetup.{h,cc}
+                           src/transformer/visitors.{h,cc}
+                           src/utils/utils.{h,cc}
+                         Built via CMake.
+
+  counter/  stack/       Source benchmarks (user-written form).
+  hanoi/    DS/          DS is the multi-file data-structure test suite.
+
+  concept/               Hand-transformed reference files for each benchmark.
+                         These are how the persistified output is expected to
+                         look; useful for comparing tool output against.
+
+  Output/                Where the persistified versions of each benchmark
+                         land after running ./persistify.py.
+
+  persistify.py          Top-level driver: runs the Clang tool on a benchmark
+                         and produces Output/<benchmark>/.
+  run.py                 Top-level driver: compiles and runs a benchmark from
+                         Output/<benchmark>/.
+
+  pracitce/  tests/      Library-level practice programs and unit tests.
+
+  Docs/                  Design notes, OS/C++ knowledge bases, environment
+                         setup, Clang-tool design doc. Read these for context.
+
+  HANDOFF.md             Living state-of-the-project document. Read this for
+                         the latest design decisions, open questions, what
+                         was done when, and what's next.
+```
+
+## Prerequisites
+
+- Linux + Clang 20 (LLVM development headers).
+- PMDK userspace libraries: `libpmem-dev`, `libpmemobj-dev`, `libpmemobj-cpp-dev`
+  (`apt install` on Ubuntu).
+- Persistent memory device. For development this can be the kernel's pmem
+  emulation:
+  - Reserve memory via GRUB: `memmap=4G!4G` (4 GB at offset 4 GB).
+  - Format `/dev/pmem0` as ext4 with DAX, mount at `/mnt/pmem-emu`.
+  - See [`Docs/EnvironmentSetup.md`](Docs/EnvironmentSetup.md) for the exact
+    sequence used on this machine.
+- The Clang tool expects the pool at `/mnt/pmem-emu/global_persistent_pool`
+  (overridable via `PERSISTENT_POOL_PATH` env var; see `persistentLib/pmem_allocator.hpp`).
+
+## Quick start
+
+### 1. Build the Clang tool
 
 ```shell
-    python3 numafy.py --ROOT_DIR=[PATH] [SUITE] [OPTIONS]
-```
-* ROOT_DIR will default to `$HOME/NUMATyping` if not specified.
-* SUITE is the benchmarks name i.e. ycsb, Histogram, DataStructures etc
-* To see other options and help message run with `--help`
-
-## RUNNING BENCHMARKS
-
-The are multiple ways to run the different benchmarks.
-### YCSB
-* Running native: 
-```shell 
-    cd ycsb
-    make clean
-    make ROOT_DIR=[PATH] UMF=1
-    numactl --cpunodebind=0,1 --membind=0,1 ./bin/ycsb --th_config=numa --DS_config=numa -t 40 -b 1333 --w=D -u 120 -k 10000000 --l=80-20 -i 10 -a 1000
+cd persist-clang-tool
+mkdir -p build && cd build
+cmake ..
+cmake --build .
+cd ../..
 ```
 
-* Running numafied version (Make sure to run it after NUMAFYING: [Jump to Subtitle](#NUMAFYING)
+### 2. Persistify a benchmark
+
+This runs both passes (`root-setup` then `recurse-persistent`) and drops the
+fully-rewritten source into `Output/<benchmark>/`.
+
 ```shell
-    cd Output/ycsb
-    make clean
-    make ROOT_DIR=[PATH] UMF=1
-    numactl --cpunodebind=0,1 --membind=0,1 ./bin/ycsb --th_config=numa --DS_config=numa -t 40 -b 1333 --w=D -u 120 -k 10000000 --l=80-20 -i 10 -a 1000
+./persistify.py hanoi
+./persistify.py stack
+./persistify.py DS
 ```
- 
- NOTE: There is also a way to run with multiple configurations at once using the meta.py script. 
-    Example usage:
-    ```shell
-        numactl --cpunodebind=0,1 --membind=0,1 ./bin/ycsb --meta th_config:numa:regular --meta DS_config:numa:regular \
-        --meta t:80 --meta b:1333 --meta w:D --meta u:30 --meta k:15000000 --meta l:80-20 --meta i:20 --meta a:1000
-    ```
-    More help can be found running meta.py with `--help`
 
-* Running numafied version with csv files and graphs
+Available benchmarks: `counter`, `stack`, `hanoi`, `DS`.
+
+### 3. Compile and run
+
+`run.py` compiles the persistified output and runs the binary. Use `--fresh`
+to wipe the pmem pool first (test first-run behavior); use `--runs N` to run
+the binary N times in a row (test persistence by watching state grow).
+
 ```shell
-    python3 runYCSB.py --ROOT_DIR=[PATH] --UMF --numafy [OPTIONS]
+./run.py hanoi --fresh --runs 2   # solve Towers of Hanoi, run twice
+./run.py stack --fresh --runs 3   # push three rounds, watch stack grow
+./run.py DS    --fresh --runs 2   # data-structure test suite
 ```
-    **`--numafy` is optional and is only there if you want to numafy the native code before you begin. For more opitons, run with --help.
 
-### DATASTRUCTURES
+## Status
+
+- `persistentLib/` — `persistent<T>` library, `pmem_ptr<T>` smart pointer,
+  `pmem_get_or_create<T>(slot, args...)` find-or-create. Stable.
+- `persist-clang-tool/` — Phase 5.1 (discovery + root insertion), 5.2
+  (recursive specialization), 5.3 (body rewriting via visitors: new-expr →
+  `new persistent<T>`, LHS rewrite, `.get()` insertion, transaction
+  wrapping). Stable for the four current benchmarks except as below.
+- **Counter is still broken** by an assignment-form declaration pattern
+  (`persistent<int>* counter; counter = new persistent<int>(0);`) — the
+  root-setup visitor expects an inline initializer. Phase 5.1 cleanup.
+- `concept/` files are the hand-written reference for what each benchmark
+  *should* look like after persistification.
+
+Up-to-date design decisions and "next concrete step" live in
+[`HANDOFF.md`](HANDOFF.md).
+
+## Reading order for a fresh visitor
+
+1. [`HANDOFF.md`](HANDOFF.md) — current state, open questions, design decisions.
+2. [`Docs/EnvironmentSetup.md`](Docs/EnvironmentSetup.md) — pmem setup.
+3. [`Docs/clang-tool.md`](Docs/clang-tool.md) — Phase 5 design doc.
+4. `concept/<benchmark>/transformed_*.cpp` next to `<benchmark>/user_*.cpp`
+   — see what the tool is supposed to produce.

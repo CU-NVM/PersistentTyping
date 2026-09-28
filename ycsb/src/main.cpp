@@ -24,19 +24,18 @@ int bucket_count = 1024;
 string workload_key = "A-100-0-100"; // Default to Workload A, 100% local, 100% of threads
 uint64_t num_keys = 10000;
 double theta = 0.99;
+string key_mix = "uniform";   // --mix: "uniform" or "zipfian"
+string hash_fn = "djb2";      // --hash: "djb2" or "mix"
 string th_config = "regular";
 string DS_config = "regular";
 int duration = 20;
 int interval = 10;
 int num_tables = 10;
+int payload_size = 64;          // -p: bytes of per-record payload (char* value)
+int warmup = 0;                 // -W: untimed warmup seconds before measuring
 
-extern int64_t ops0;
-extern int64_t ops1;
 extern std::vector<int64_t> globalOps0;
 extern std::vector<int64_t> globalOps1;
-std::vector <int64_t> num_ops1;
-std::vector <int64_t> num_ops0;
-std::vector <int64_t> total_ops;
 
 vector<thread_numa<NODE_ZERO>*> numa_thread0;
 vector<thread_numa<MAX_NODE>*> numa_thread1;
@@ -59,18 +58,16 @@ void print_function(int duration, int64_t ops0, int64_t ops1, int64_t totalOps) 
 	std::cout<<num_threads << ", ";
 	std::cout<<th_config << ", ";
 	std::cout<<DS_config << ", ";
+	std::cout<<key_mix << ", ";        // uniform | zipfian
     std::cout<<bucket_count<<", ";
-    std::cout<<workload_key<<", ";
+    for(char _c : workload_key) std::cout << (_c==',' ? '-' : _c);  // ','->'-' so it's one CSV cell
+    std::cout<<", ";
 	std::cout<<duration << ", ";
 	std::cout<<num_keys<<", ";
 	std::cout<<interval<<", ";
 	std::cout<<ops0 << ", ";
 	std::cout<<ops1 << ", ";
 	std::cout<<totalOps << "\n";
-}
-
-void print_header() {
-    std::cout << "Date, Time, Num_Tables, Num_Threads, Thread_Config, DS_Config, Buckets, Workload, Duration(s), Num_Keys, Interval(s), Ops_Node0, Ops_Node1, Total_Ops\n";
 }
 
 void compile_options(int argc, char *argv[]) {
@@ -85,6 +82,10 @@ void compile_options(int argc, char *argv[]) {
         {"DS_config",  required_argument, nullptr, 'd'},
         {"interval",   required_argument, nullptr, 'i'},
         {"tables",     required_argument, nullptr, 'a'},
+        {"mix",        required_argument, nullptr, 'm'},
+        {"hash",       required_argument, nullptr, 'H'},
+        {"payload",    required_argument, nullptr, 'p'},
+        {"warmup",     required_argument, nullptr, 'W'},
         {"help",       no_argument,       nullptr, 'h'},
         {nullptr, 0, nullptr, 0}
     };
@@ -92,7 +93,7 @@ void compile_options(int argc, char *argv[]) {
     int opt;
     int option_index = 0;
 
-    while ((opt = getopt_long(argc, argv, "t:b:w:u:k:z:c:d:i:a:h", long_options, &option_index)) != -1) {
+    while ((opt = getopt_long(argc, argv, "t:b:w:u:k:z:c:d:i:a:m:H:p:W:h", long_options, &option_index)) != -1) {
         switch (opt) {
             case 't': num_threads = std::stoi(optarg); break;
             case 'b': bucket_count = std::stoi(optarg); break;
@@ -103,6 +104,23 @@ void compile_options(int argc, char *argv[]) {
             case 'c': th_config = optarg; break;
             case 'd': DS_config = optarg; break;
             case 'a': num_tables = std::stoi(optarg); break;
+            case 'i': interval = std::stoi(optarg); break;
+            case 'm':
+                key_mix = optarg;
+                if (key_mix != "uniform" && key_mix != "zipfian") {
+                    cerr << "Invalid --mix value '" << key_mix << "' (expected 'uniform' or 'zipfian').\n";
+                    exit(1);
+                }
+                break;
+            case 'H':
+                hash_fn = optarg;
+                if (hash_fn != "djb2" && hash_fn != "mix") {
+                    cerr << "Invalid --hash value '" << hash_fn << "' (expected 'djb2' or 'mix').\n";
+                    exit(1);
+                }
+                break;
+            case 'p': payload_size = std::stoi(optarg); break;
+            case 'W': warmup = std::stoi(optarg); break;
             case 'h':
                 cout << "Usage: ./runner [options]\n";
                 cout << "Options:\n";
@@ -115,6 +133,10 @@ void compile_options(int argc, char *argv[]) {
                 cout << "  -z, --theta <float>      Zipfian theta (default: 0.99)\n";
                 cout << "  -c, --th_config <cfg>    Thread config (regular, numa) (default: regular)\n";
                 cout << "  -d, --DS_config <cfg>    Data structure config (regular, numa) (default: regular)\n";
+                cout << "  -m, --mix <dist>         Key distribution: uniform or zipfian (default: uniform)\n";
+                cout << "  -H, --hash <fn>          Key placement hash: djb2 or mix (default: djb2)\n";
+                cout << "  -p, --payload <bytes>    Per-record payload size in bytes (default: 64)\n";
+                cout << "  -W, --warmup <sec>       Untimed warmup seconds before measuring (default: 0)\n";
                 exit(0);
             case '?':
                 cerr << "Unknown option or missing argument.\n";
@@ -124,77 +146,8 @@ void compile_options(int argc, char *argv[]) {
     }
 }
 
-WorkloadConfig selectWorkload(const string &w) {
-    WorkloadConfig workloadA = {50, 50, 0, 0, 0};
-    WorkloadConfig workloadB = {95, 5, 0, 0, 0};
-    WorkloadConfig workloadC = {100, 0, 0, 0, 0};
-    WorkloadConfig workloadD = {95, 0, 5, 0, 0};
-    WorkloadConfig workloadE = {0, 0, 5, 95, 0};
-    WorkloadConfig workloadF = {50, 0, 0, 0, 50};
-    if (w == "A") return workloadA;
-    if (w == "B") return workloadB;
-    if (w == "C") return workloadC;
-    if (w == "D") return workloadD;
-    if (w == "E") return workloadE;
-    if (w == "F") return workloadF;
-    throw runtime_error("Unknown workload " + w);
-}
-
-struct MixedWorkloadConfig {
-    WorkloadConfig cfg;
-    int local_pct;
-};
-vector<MixedWorkloadConfig> parse_mixed_workload(const string& w_key, int num_threads) {
-    vector<MixedWorkloadConfig> pool;
-    int total_pct = 0;
-    stringstream ss(w_key);
-    string item;
-    
-    // 1. Build a pool of all required workloads
-    while (getline(ss, item, ',')) {
-        stringstream ss2(item);
-        string w_type, local_s, remote_s, pct_s;
-        
-        getline(ss2, w_type, '-');
-        getline(ss2, local_s, '-');
-        getline(ss2, remote_s, '-');
-        getline(ss2, pct_s, '-');
-        
-        int local_pct = stoi(local_s);
-        int thread_pct = stoi(pct_s);
-        
-        total_pct += thread_pct;
-        if (total_pct > 100) {
-            cerr << "Error: Total thread percentage exceeds 100%\n";
-            exit(1);
-        }
-        
-        int threads_for_this = (num_threads * thread_pct) / 100;
-        WorkloadConfig cfg = selectWorkload(w_type);
-        
-        for (int i = 0; i < threads_for_this; ++i) {
-            pool.push_back({cfg, local_pct});
-        }
-    }
-    
-    // Fill any remainder due to integer division with the last config
-    while (pool.size() < (size_t)num_threads && !pool.empty()) {
-        pool.push_back(pool.back());
-    }
-
-    // 2. Deal the workloads evenly across the two NUMA nodes (Interleaving)
-    vector<MixedWorkloadConfig> thread_tasks(num_threads);
-    int threads_per_node = num_threads / 2;
-    
-    for(int i = 0; i < threads_per_node; i++) {
-        // Assign to Node 0 (Threads 0 to threads_per_node-1)
-        thread_tasks[i] = pool[i * 2]; 
-        // Assign to Node 1 (Threads threads_per_node to num_threads-1)
-        thread_tasks[i + threads_per_node] = pool[i * 2 + 1]; 
-    }
-    
-    return thread_tasks;
-}
+// selectWorkload / MixedWorkloadConfig / parse_mixed_workload live in
+// ycsb_benchmark.cpp (declared in ycsb_benchmark.hpp), used by run_ycsb_benchmark.
 void run_ycsb_benchmark(
     const string& workload_key,
     int duration,
@@ -212,8 +165,14 @@ void run_ycsb_benchmark(
         return;
     }
     
-    for (int i = 0; i < num_threads; ++i)
-        generators.push_back(new ZipfianGenerator(0, num_keys - 1, theta));
+    // Building a ZipfianGenerator runs an O(num_keys) zeta precompute; only pay
+    // that when --mix=zipfian. For uniform, push nullptr (ycsb_test won't use it).
+    for (int i = 0; i < num_threads; ++i) {
+        if (key_mix == "zipfian")
+            generators.push_back(new ZipfianGenerator(0, num_keys - 1, theta));
+        else
+            generators.push_back(nullptr);
+    }
 
     vector<MixedWorkloadConfig> thread_tasks = parse_mixed_workload(workload_key, num_threads);
     
@@ -227,14 +186,14 @@ void run_ycsb_benchmark(
         for(int i=0; i< threads_per_node; ++i)
         {   int thread_id = i;
             int numa_node = 0;
-            init_thread0[i] = new thread_numa<NODE_ZERO>(numa_hash_table_init, thread_id ,numa_node, DS_config, buckets, num_tables/2, num_keys, num_threads);
+            init_thread0[i] = new thread_numa<NODE_ZERO>(numa_hash_table_init, thread_id ,numa_node, DS_config, buckets, num_tables/2, num_keys, num_threads, payload_size);
         }
 
         for(int i=0; i< threads_per_node; ++i)
         {   
             int thread_id = i + threads_per_node;
             int numa_node = 1;
-            init_thread1[i] = new thread_numa<MAX_NODE>(numa_hash_table_init, thread_id ,numa_node, DS_config, buckets, num_tables/2, num_keys, num_threads);
+            init_thread1[i] = new thread_numa<MAX_NODE>(numa_hash_table_init, thread_id ,numa_node, DS_config, buckets, num_tables/2, num_keys, num_threads, payload_size);
         }
 
         for(auto th : init_thread0) th->join();
@@ -247,13 +206,13 @@ void run_ycsb_benchmark(
         for(int i=0; i< threads_per_node; ++i){   
             int thread_id = i;
             int numa_node = 0;
-            init_thread_regular0[i] = new thread(numa_hash_table_init, thread_id ,numa_node, DS_config, buckets, num_tables/2, num_keys, num_threads);
+            init_thread_regular0[i] = new thread(numa_hash_table_init, thread_id ,numa_node, DS_config, buckets, num_tables/2, num_keys, num_threads, payload_size);
         }
         for(int i=0; i< threads_per_node; ++i)
         {   
             int thread_id = i + threads_per_node;
             int numa_node = 1;
-            init_thread_regular1[i] = new thread(numa_hash_table_init, thread_id ,numa_node, DS_config, buckets, num_tables/2, num_keys, num_threads);
+            init_thread_regular1[i] = new thread(numa_hash_table_init, thread_id ,numa_node, DS_config, buckets, num_tables/2, num_keys, num_threads, payload_size);
         }
 
         for(auto th : init_thread_regular0) th->join();
@@ -275,6 +234,7 @@ void run_ycsb_benchmark(
 
     auto start = chrono::high_resolution_clock::now();
     int tables_per_node = num_tables/2;
+    bool use_zipfian = (key_mix == "zipfian");
 
     for (int i = 0; i < threads_per_node; ++i) {
         int thread_id = i;
@@ -287,7 +247,7 @@ void run_ycsb_benchmark(
                 &thread_tasks[thread_id].cfg, 
                 generators[thread_id], num_keys, 
                 thread_tasks[thread_id].local_pct, 
-                interval, tables_per_node
+                interval, tables_per_node, use_zipfian, payload_size, warmup
             );
         } else {
             regular_thread0[i] = new thread(
@@ -296,7 +256,7 @@ void run_ycsb_benchmark(
                 &thread_tasks[thread_id].cfg, 
                 generators[thread_id], num_keys, 
                 thread_tasks[thread_id].local_pct, 
-                interval, tables_per_node
+                interval, tables_per_node, use_zipfian, payload_size, warmup
             );
         }
     }
@@ -311,7 +271,7 @@ void run_ycsb_benchmark(
                 &thread_tasks[thread_id].cfg, 
                 generators[thread_id], num_keys, 
                 thread_tasks[thread_id].local_pct, 
-                interval, tables_per_node
+                interval, tables_per_node, use_zipfian, payload_size, warmup
             );
         } else {
             regular_thread1[i] = new thread(
@@ -320,7 +280,7 @@ void run_ycsb_benchmark(
                 &thread_tasks[thread_id].cfg, 
                 generators[thread_id], num_keys, 
                 thread_tasks[thread_id].local_pct, 
-                interval, tables_per_node
+                interval, tables_per_node, use_zipfian, payload_size, warmup
             );
         }
     }
@@ -340,15 +300,15 @@ void run_ycsb_benchmark(
         for (auto th : regular_thread0) delete th;
         for (auto th : regular_thread1) delete th;
     }
-
-    num_ops0.push_back(ops0);
-	num_ops1.push_back(ops1);
-	total_ops.push_back(ops0 + ops1);
 }
 
 int main(int argc, char** argv) {
 
     compile_options(argc, argv);
+
+    // Select the key-placement hash before any prefill/worker threads spawn.
+    set_hash_mode(hash_fn == "mix" ? 1 : 0);
+    std::cerr << "[config] hash=" << hash_fn << " mix=" << key_mix << " payload=" << payload_size << "\n";
 
     if (th_config == "numa" || DS_config == "numa") {
         if (numa_num_configured_nodes() == 1) {
@@ -375,20 +335,6 @@ int main(int argc, char** argv) {
         delete gen;
     }
     
-    int64_t sum0 = 0;
-	int64_t sum1 = 0;
-	int64_t total_sum = 0;
-	
-	for(int i = 0; i < num_ops0.size(); i++){
-		sum0 += num_ops0[i];	
-	}
-	for(int i = 0; i < num_ops1.size(); i++){
-		sum1 += num_ops1[i];
-	}
-	for(int i = 0; i < total_ops.size(); i++){
-		total_sum += total_ops[i];
-	}
-	
 	int newDuration = interval;
 	for(int i = 0; i< globalOps0.size(); i++){
 		print_function(newDuration, globalOps0[i], globalOps1[i], globalOps0[i] + globalOps1[i]);

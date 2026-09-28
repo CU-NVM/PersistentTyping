@@ -2,6 +2,7 @@
 #define YCSB_BENCHMARK_HPP
 
 #include <string>
+#include <vector>
 #include "zipfian_generator.h"
 #include <stdexcept>
 #include <jemalloc/jemalloc.h>
@@ -32,9 +33,19 @@ struct WorkloadConfig {
 
 WorkloadConfig selectWorkload(const string &w);
 
+// A per-thread task: which workload config it runs and its local-access %.
+struct MixedWorkloadConfig {
+    WorkloadConfig cfg;
+    int local_pct;
+};
+vector<MixedWorkloadConfig> parse_mixed_workload(const string& w_key, int num_threads);
+
+// Select the key-placement hash: 0 = djb2 (default), 1 = mix. Call before threads spawn.
+void set_hash_mode(int mode);
+
 void global_init(int num_threads, int duration, int interval);
 
-void numa_hash_table_init(int thread_id, int numa_node, std::string DS_config, int buckets, int num_tables, uint64_t num_keys, int num_total_threads);
+void numa_hash_table_init(int thread_id, int numa_node, std::string DS_config, int buckets, int num_tables, uint64_t num_keys, int num_total_threads, int payload_size);
 
 void ycsb_test(
     int thread_id,
@@ -46,7 +57,10 @@ void ycsb_test(
     uint64_t num_keys,
     int local_pct,
     int interval,
-    int num_tables
+    int num_tables,
+    bool use_zipfian,
+    int payload_size,
+    int warmup
 );
 
 void run_ycsb_benchmark(

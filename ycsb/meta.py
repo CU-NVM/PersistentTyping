@@ -131,7 +131,8 @@ if __name__ == "__main__":
 		if(not options.printOnly):
 			result = os.system(command)
 			if(result!=0):
-				sys.exit(0)
+				sys.stderr.write("META-FAIL (exit %d): %s\n" % (result, command))
+				sys.exit(1)
 			print ('\n')
 
 

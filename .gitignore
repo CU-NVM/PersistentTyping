@@ -5,6 +5,7 @@ numa-clang-tool/output2/*
 Clobber-NVM/
 Clobber-NVM.tar.gz
 unified-memory-framework/build/*
+persist-clang-tool/build/*
 *.o
 *.txt
 *.out
@@ -15,3 +16,9 @@ Output/*
 
 
 
+
+# idea.md / design.md are symlinks into the thesis repo (canonical copies live
+# at ~/thesis/PersistentTyping/). Ignored here so the symlinks are never
+# committed into this repo as symlinks.
+idea.md
+design.md

@@ -1,0 +1,19 @@
+[
+  {
+    "arguments": [
+      "/usr/local/bin/clang++",
+      "-c",
+      "-O3",
+      "-g",
+      "-std=c++17",
+      "-Iinclude",
+      "-I/home/kidus/PersistentTyping/persistentLib",
+      "-o",
+      "src/main.o",
+      "src/main.cpp"
+    ],
+    "directory": "/home/kidus/PersistentTyping/DataStructureTests",
+    "file": "/home/kidus/PersistentTyping/DataStructureTests/src/main.cpp",
+    "output": "/home/kidus/PersistentTyping/DataStructureTests/src/main.o"
+  }
+]

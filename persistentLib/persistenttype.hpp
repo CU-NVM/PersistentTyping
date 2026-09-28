@@ -8,7 +8,8 @@
 #include <stdexcept>
 #include <iostream>
 #include <cassert>
-#include "pmem_allocator.hpp"   
+#include "pmem_allocator.hpp"
+#include "pmem_string.hpp"
 
 
 template<typename T>
@@ -90,10 +91,11 @@ public:
     persistent(){store((T)0);};
     persistent(const T& data){store(data);};
 
-    inline operator T&() {
-        return contents;
-    }
-
+    // Read-only conversion. The mutable `operator T&()` is deliberately absent:
+    // handing out a raw `T&` would let callers write to `contents` directly,
+    // bypassing store()'s pmemobj_tx_add_range_direct snapshot and leaving the
+    // write outside the undo log (unrecoverable on abort/crash). Every mutation
+    // must go through operator=, the compound-assignment operators, or ++/--.
     inline operator const T&() const {
         return contents;
     }
@@ -108,24 +110,33 @@ public:
         return load();
     }
 
-    static void* operator new(std::size_t sz){
-        allocator_type alloc;
-        return alloc.allocate(sz);
-    }
+    persistent& operator++()    { store(load() + 1); return *this; }          // ++x
+    T operator++(int)           { T old = load(); store(old + 1); return old; } // x++
+    persistent& operator--()    { store(load() - 1); return *this; }          // --x
+    T operator--(int)           { T old = load(); store(old - 1); return old; } // x--
 
-    static void* operator new[](std::size_t sz){
-        allocator_type alloc;
-        return alloc.allocate(sz);
-    }
+    persistent& operator+=(const T& v) { store(load() + v); return *this; }
+    persistent& operator-=(const T& v) { store(load() - v); return *this; }
+    persistent& operator*=(const T& v) { store(load() * v); return *this; }
+    persistent& operator/=(const T& v) { store(load() / v); return *this; }
+    persistent& operator%=(const T& v) { store(load() % v); return *this; }
+    persistent& operator&=(const T& v) { store(load() & v); return *this; }
+    persistent& operator|=(const T& v) { store(load() | v); return *this; }
+    persistent& operator^=(const T& v) { store(load() ^ v); return *this; }
+    persistent& operator<<=(const T& v){ store(load() << v); return *this; }
+    persistent& operator>>=(const T& v){ store(load() >> v); return *this; }
 
-    static void operator delete(void *ptr) {
-        allocator_type alloc;
-        alloc.deallocate(static_cast<typename allocator_type::pointer>(ptr), 1);
-    }
-    static void operator delete[](void *ptr) {
-        allocator_type alloc;
-        alloc.deallocate(static_cast<typename allocator_type::pointer>(ptr), 1);
-    }
+    // operator new/new[] receive a size in BYTES, so they must go straight to
+    // pmem_alloc. Routing through allocator_type::allocate() would be wrong:
+    // allocate() takes a COUNT and multiplies by sizeof(T) internally, so the
+    // byte count would be scaled a second time (4x over-allocation for int,
+    // 8x for double, etc.). Correct-by-coincidence only for sizeof(T) == 1.
+    // This also matches the operator new/delete the Clang tool emits into
+    // generated persistent<T> specializations.
+    static void* operator new(std::size_t sz)   { return pmem_alloc(sz, alignof(T)); }
+    static void* operator new[](std::size_t sz) { return pmem_alloc(sz, alignof(T)); }
+    static void  operator delete(void* ptr)     { pmem_free(ptr); }
+    static void  operator delete[](void* ptr)   { pmem_free(ptr); }
 
     persistent& operator=(const T& data){
         store(data);
