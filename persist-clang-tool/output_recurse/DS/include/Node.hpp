@@ -18,11 +18,8 @@ public:
     pmem_ptr<persistent<Node>> next;
     static void* operator new(std::size_t sz) { return pmem_alloc(sz, alignof(Node)); }
     static void  operator delete(void* p)     { pmem_free(p); }
-    persistent(int v) {
-        pmem::obj::transaction::run(pmem_pool(), [&]() {
-    value = v;
-    next = nullptr;
-});
+    persistent(int v) : value(v), next(nullptr) {
+        pmem::obj::transaction::run(pmem_pool(), [&]() {});
     }
 
 };

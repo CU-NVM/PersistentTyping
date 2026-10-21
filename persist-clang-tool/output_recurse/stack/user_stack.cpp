@@ -52,11 +52,8 @@ public:
     pmem_ptr<persistent<Node>> next;
     static void* operator new(std::size_t sz) { return pmem_alloc(sz, alignof(Node)); }
     static void  operator delete(void* p)     { pmem_free(p); }
-    persistent(int v) {
-        pmem::obj::transaction::run(pmem_pool(), [&]() {
-    value = v;
-    next = nullptr;
-});
+    persistent(int v) : value(v), next(nullptr) {
+        pmem::obj::transaction::run(pmem_pool(), [&]() {});
     }
 
 };
@@ -88,14 +85,12 @@ public:
 template<>
 class persistent<Stack> {
 public:
-    pmem_ptr<persistent<Node>> top;
-    persistent<int> size;
+    pmem_ptr<persistent<Node>> top{nullptr};
+    persistent<int> size = 0;
     static void* operator new(std::size_t sz) { return pmem_alloc(sz, alignof(Stack)); }
     static void  operator delete(void* p)     { pmem_free(p); }
-    persistent(int size) {
-        pmem::obj::transaction::run(pmem_pool(), [&]() {
-    size = size;
-});
+    persistent(int size = 0) : size(size) {
+        pmem::obj::transaction::run(pmem_pool(), [&]() {});
     }
 
     void push(int v) {

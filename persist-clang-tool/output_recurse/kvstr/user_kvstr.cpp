@@ -123,8 +123,8 @@ public:
     }
 
 private:
-    pmem_ptr<persistent<Node>> head;
-    persistent<int> size;
+    pmem_ptr<persistent<Node>> head{nullptr};
+    persistent<int> size = 0;
 };
 
 

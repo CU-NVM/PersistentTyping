@@ -76,8 +76,8 @@ public:
     }
 
 private:
-    pmem_ptr<persistent<Node>> top;
-    persistent<int> size;
+    pmem_ptr<persistent<Node>> top{nullptr};
+    persistent<int> size = 0;
 };
 
 

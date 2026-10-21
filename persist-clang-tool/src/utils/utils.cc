@@ -173,6 +173,15 @@ buildMethodSignature(const clang::CXXMethodDecl* method,
         if(!param->getNameAsString().empty()) {
             sig += " " + param->getNameAsString();
         }
+        // Default arguments live only on the in-class declaration, which is
+        // the one rd->methods() hands us. Copied as written, not rewritten.
+        if(param->hasDefaultArg() && !param->hasUnparsedDefaultArg()
+                                  && !param->hasUninstantiatedDefaultArg()) {
+            const clang::ASTContext& ctx = param->getASTContext();
+            sig += " = " + clang::Lexer::getSourceText(
+                               clang::CharSourceRange::getTokenRange(param->getDefaultArgRange()),
+                               ctx.getSourceManager(), ctx.getLangOpts()).str();
+        }
         first = false;
     }
     sig += ")";

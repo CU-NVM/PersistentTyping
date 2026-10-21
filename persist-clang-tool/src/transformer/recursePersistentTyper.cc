@@ -111,7 +111,8 @@ std::string RecursePersistentTyper::processClass(const std::string& name,
     for(const auto* field : rd->fields()) {
         Bucket& b = bucketFor(field->getAccess());
         std::string wrapped = utils::wrapFieldType(field->getType(), printPolicy, seen, workList);
-        b.fields += "    " + wrapped + " " + field->getNameAsString() + ";\n";
+        b.fields += "    " + wrapped + " " + field->getNameAsString()
+                  + processInClassInit(field) + ";\n";
     }
 
      // Operator new/delete — always public.
@@ -190,6 +191,48 @@ std::string RecursePersistentTyper::processConstructor(const clang::CXXConstruct
     std::string sig = utils::buildMethodSignature(ctor, printPolicy);
     if(!initList.empty()) sig += " : " + initList;
     return sig + " " + wrapInTransaction(body, ctor) + "\n";
+}
+
+// A default member initializer (`int capacity = 16;`) is carried over to the
+// wrapped field; without it persistent<T>'s default constructor zeroes the
+// field. `= x` is kept only where the wrapper converts implicitly (persistent<F>
+// for fundamentals and non-class pointers, pmem_string): braces there would
+// reject narrowing like `int x = 3.5`. pmem_ptr<..> and persistent<Class> have
+// explicit constructors, so they get `{x}` instead. A by-value class built in
+// place (`Pt origin = Pt(4, 5);`) forwards its arguments, `origin{4, 5}`, since
+// persistent<Pt> mirrors Pt's constructors but cannot be built from a raw Pt.
+// Any other class-typed initializer (e.g. a call returning Pt) is left as
+// `{expr}` and fails to compile at the spec.
+std::string RecursePersistentTyper::processInClassInit(const clang::FieldDecl* field) {
+    clang::Expr* init = field->getInClassInitializer();
+    if(!init) return "";
+
+    clang::Rewriter scratch(context.getSourceManager(), context.getLangOpts());
+    runRewriters(init, scratch);
+    std::string text = scratch.getRewrittenText(init->getSourceRange());
+
+    if(field->getInClassInitStyle() == clang::ICIS_ListInit) return text;
+
+    clang::QualType qt = field->getType();
+    if(qt->getAsCXXRecordDecl()) {
+        const clang::Expr* e = init->IgnoreImplicit();
+        if(const auto* cast = llvm::dyn_cast<clang::CXXFunctionalCastExpr>(e))
+            e = cast->getSubExpr()->IgnoreImplicit();
+        const auto* ce = llvm::dyn_cast<clang::CXXConstructExpr>(e);
+        if(ce && !ce->isListInitialization()
+              && context.hasSameUnqualifiedType(ce->getType(), qt)) {
+            std::string args;
+            for(const clang::Expr* arg : ce->arguments()) {
+                if(llvm::isa<clang::CXXDefaultArgExpr>(arg)) break;
+                if(!args.empty()) args += ", ";
+                args += scratch.getRewrittenText(arg->getSourceRange());
+            }
+            return "{" + args + "}";
+        }
+    }
+    bool implicitWrapper = !qt->getAsCXXRecordDecl()
+                        && !(qt->isPointerType() && qt->getPointeeType()->getAsCXXRecordDecl());
+    return implicitWrapper ? " = " + text : "{" + text + "}";
 }
 
 void RecursePersistentTyper::runRewriters(clang::Stmt* s, clang::Rewriter& scratch) {

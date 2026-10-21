@@ -37,6 +37,7 @@ private:
     std::string processClass(const std::string& name, const clang::CXXRecordDecl* decl);
     std::string processMethod(const clang::CXXMethodDecl* method);
     std::string processConstructor(const clang::CXXConstructorDecl* ctor);
+    std::string processInClassInit(const clang::FieldDecl* field);
     // Runs the body visitors (new T -> new persistent<T>, etc.) over `s`,
     // recording their edits in `scratch`.
     void runRewriters(clang::Stmt* s, clang::Rewriter& scratch);
