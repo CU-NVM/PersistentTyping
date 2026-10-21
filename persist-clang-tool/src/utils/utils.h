@@ -53,15 +53,6 @@ std::string
 getMethodBodyText(const clang::CXXMethodDecl* method,
                   clang::ASTContext& context);
 
-// Converts a constructor's member-initializer list to body-assignment
-// statements ("    fieldName = initExpr;\n" per init).
-// Skips base-class inits, delegating ctors, and synthesized inits.
-// Returns empty string if there's nothing to emit.
-std::string
-getCtorInitAssignments(const clang::CXXConstructorDecl* ctor,
-                       clang::ASTContext& context);
-
-
 std::set<std::string> findExistingPersistentSpecs(clang::ASTContext& context,
                                                   const clang::PrintingPolicy& policy);
 

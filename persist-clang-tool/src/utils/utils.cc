@@ -191,23 +191,6 @@ getMethodBodyText(const clang::CXXMethodDecl* method, clang::ASTContext& context
                     
 }
 
-std::string
-getCtorInitAssignments(const clang::CXXConstructorDecl* ctor, clang::ASTContext& context){
-    std::string out;
-    for(const auto* init : ctor->inits()) {
-        if(!init->isWritten()) continue;
-        const auto* field = init->getMember();
-        if (!field) continue;
-        clang::SourceRange initRange = init->getInit()->getSourceRange();
-        std::string initText = clang::Lexer::getSourceText(clang::CharSourceRange::getTokenRange(initRange),
-                                                            context.getSourceManager(),
-                                                            context.getLangOpts()).str();
-        out += "    " + field->getNameAsString() + " = " + initText + ";\n";
-    }
-    return out;
-}
-
-
 void writeAllRewrites(clang::Rewriter& rewriter, clang::ASTContext& context) {
     auto& SM = context.getSourceManager();
     bool wroteAny = false;

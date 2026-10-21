@@ -115,6 +115,7 @@ public:
     persistent& operator--()    { store(load() - 1); return *this; }          // --x
     T operator--(int)           { T old = load(); store(old - 1); return old; } // x--
 
+
     persistent& operator+=(const T& v) { store(load() + v); return *this; }
     persistent& operator-=(const T& v) { store(load() - v); return *this; }
     persistent& operator*=(const T& v) { store(load() * v); return *this; }
@@ -142,6 +143,7 @@ public:
         store(data);
         return *this;
     }
+    persistent& operator=(const persistent& o) { store(o.load()); return *this; }
 };
 
 

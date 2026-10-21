@@ -11,6 +11,8 @@
 namespace clang {
     class CXXRecordDecl;
     class CXXMethodDecl;
+    class CXXConstructorDecl;
+    class Stmt;
 }
 
 class RecursePersistentTyper {
@@ -34,6 +36,12 @@ private:
     void discoverTypesFromRoot();
     std::string processClass(const std::string& name, const clang::CXXRecordDecl* decl);
     std::string processMethod(const clang::CXXMethodDecl* method);
+    std::string processConstructor(const clang::CXXConstructorDecl* ctor);
+    // Runs the body visitors (new T -> new persistent<T>, etc.) over `s`,
+    // recording their edits in `scratch`.
+    void runRewriters(clang::Stmt* s, clang::Rewriter& scratch);
+    // Wraps a rewritten method body ("{...}") in a PMDK transaction.
+    std::string wrapInTransaction(const std::string& body, const clang::CXXMethodDecl* method);
 };
 
 #endif
