@@ -1,0 +1,4 @@
+# A template defined in the .cpp can be neither forward-declared nor included
+# by the root header.
+expect: fail
+error: cannot be forward-declared in the shared root header; move it to a header

@@ -1,0 +1,24 @@
+In file included from outputs/const_member.cpp:1:
+In file included from outputs/const_member_pers_root.hpp:4:
+/home/kidus/PersistentTyping/persistentLib/persistenttype.hpp:92:5: error: constructor for 'persistent<const int>' must explicitly initialize the const member 'contents'
+   92 |     persistent(const T& data){store(data);};
+      |     ^
+outputs/const_member.cpp:26:26: note: in instantiation of member function 'persistent<const int>::persistent' requested here
+   26 |     persistent(int id) : id(id), val(id * 2) {
+      |                          ^
+/home/kidus/PersistentTyping/persistentLib/persistenttype.hpp:73:7: note: declared here
+   73 |     T contents;
+      |       ^
+/home/kidus/PersistentTyping/persistentLib/persistenttype.hpp:88:18: error: cannot assign to non-static data member 'contents' with const-qualified type 'const int'
+   88 |         contents = data;
+      |         ~~~~~~~~ ^
+/home/kidus/PersistentTyping/persistentLib/persistenttype.hpp:92:31: note: in instantiation of member function 'persistent<const int>::store' requested here
+   92 |     persistent(const T& data){store(data);};
+      |                               ^
+outputs/const_member.cpp:26:26: note: in instantiation of member function 'persistent<const int>::persistent' requested here
+   26 |     persistent(int id) : id(id), val(id * 2) {
+      |                          ^
+/home/kidus/PersistentTyping/persistentLib/persistenttype.hpp:73:7: note: non-static data member 'contents' declared const here
+   73 |     T contents;
+      |     ~~^~~~~~~~
+2 errors generated.

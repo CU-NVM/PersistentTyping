@@ -1,11 +1,9 @@
 #include "rootSetupConsumer.h"
 #include "../transformer/rootSetup.h"
-RootSetupConsumer::RootSetupConsumer(clang::CompilerInstance &compiler){
-    rootSetupRewriter.setSourceMgr(compiler.getSourceManager(), compiler.getLangOpts());
-}
+
+RootSetupConsumer::RootSetupConsumer(RootTable &table) : table(table) {}
 
 void RootSetupConsumer::HandleTranslationUnit(clang::ASTContext &context) {
-    llvm::outs() << "Handling translation unit in RootSetupConsumer\n";     
-    RootSetup rootSetup(context, rootSetupRewriter);
-    rootSetup.start();
-}   
+    RootCollector collector(context, table);
+    collector.start();
+}

@@ -1,0 +1,10 @@
+# Only roots are rewritten: a local of another function, a parameter, a
+# member and a non-persistent `new` keep their `new`.
+dump: == roots: 1 ==
+in main.cpp: persistent<int>* local = new persistent<int>(1);
+in main.cpp: param = new persistent<int>(2);
+in main.cpp: h.p = new persistent<int>(3);
+in main.cpp: int* plain = new int(4);
+notin main_pers_root.hpp: local
+notin main_pers_root.hpp: param
+out: root {n}

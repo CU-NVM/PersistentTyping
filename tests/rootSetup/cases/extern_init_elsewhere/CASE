@@ -1,0 +1,6 @@
+# The init site is in a different file from the definition: it is matched to
+# its root through the extern declaration it sees.
+header: pmem_ptr<persistent<int>> counter;
+in main.cpp: counter = pmem_get_or_create<persistent<int>>(__pers_get_root()->counter, 0);
+unchanged: a.cpp
+out: counter {n}

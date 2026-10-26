@@ -1,0 +1,5 @@
+# A static local of a free function has a single copy for the program, so it
+# could be a root, but only locals of main() are accepted.
+xfail: static locals of other functions are not collected
+header: c;
+out: calls {n}

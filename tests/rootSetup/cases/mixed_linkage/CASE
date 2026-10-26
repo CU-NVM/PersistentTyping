@@ -1,0 +1,12 @@
+# All three linkages in one program: an external root, a static root with
+# the same name in another file, and a local of main().
+dump: == roots: 3 ==
+dump: [external]
+dump: [static]
+dump: [main-local]
+header: pmem_ptr<persistent<int>> hits;
+header: pmem_ptr<persistent<int>> b__hits;
+header: pmem_ptr<persistent<long>> total;
+out: hits {n}
+out: b {n+50}
+out: total {n+7}

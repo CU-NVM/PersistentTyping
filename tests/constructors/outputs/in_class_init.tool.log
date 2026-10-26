@@ -1,0 +1,21 @@
+Running RootSetupFrontendAction on file: /home/kidus/PersistentTyping/tests/constructors/outputs/in_class_init.cpp
+/home/kidus/PersistentTyping/tests/constructors/outputs/in_class_init.cpp:31:19: warning: implicit conversion from 'double' to 'int' changes value from 3.7 to 3 [-Wliteral-conversion]
+   31 |     int   trunc = 3.7;
+      |                   ^~~
+/home/kidus/PersistentTyping/tests/constructors/outputs/in_class_init.cpp:31:19: warning: implicit conversion from 'double' to 'int' changes value from 3.7 to 3 [-Wliteral-conversion]
+   31 |     int   trunc = 3.7;
+      |                   ^~~
+2 warnings generated.
+wrote rewritten source to /home/kidus/PersistentTyping/tests/constructors/outputs/in_class_init.cpp
+wrote rewritten source to /home/kidus/PersistentTyping/tests/constructors/outputs/in_class_init_pers_root.hpp
+Running RecursePersistentFrontendAction on file: /home/kidus/PersistentTyping/tests/constructors/outputs/in_class_init.cpp
+/home/kidus/PersistentTyping/tests/constructors/outputs/in_class_init.cpp:32:19: warning: implicit conversion from 'double' to 'int' changes value from 3.7 to 3 [-Wliteral-conversion]
+   32 |     int   trunc = 3.7;
+      |                   ^~~
+/home/kidus/PersistentTyping/tests/constructors/outputs/in_class_init.cpp:32:19: warning: implicit conversion from 'double' to 'int' changes value from 3.7 to 3 [-Wliteral-conversion]
+   32 |     int   trunc = 3.7;
+      |                   ^~~
+2 warnings generated.
+Handling translation unit in RecurseConsumer
+Starting RecursePersistentTyper
+wrote rewritten source to /home/kidus/PersistentTyping/tests/constructors/outputs/in_class_init.cpp

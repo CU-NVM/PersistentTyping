@@ -1,0 +1,3 @@
+# Two programs passed at once.
+expect: fail
+error: main() is defined in more than one file

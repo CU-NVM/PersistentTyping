@@ -1,0 +1,3 @@
+# Only persistent<T>* roots are supported; a persistent<T> by value is not.
+expect: fail
+error: is not a pointer; only persistent<T>* roots are supported

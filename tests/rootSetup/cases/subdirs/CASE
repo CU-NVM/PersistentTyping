@@ -1,0 +1,9 @@
+# Files in different directories: the header is written next to main(), and
+# every other file includes it by a path relative to itself.
+flags: -Iinclude
+header: pmem_ptr<persistent<int>> counter;
+in lib/a.cpp: #include "../src/main_pers_root.hpp"
+in src/main.cpp: #include "main_pers_root.hpp"
+unchanged: include/roots.hpp
+out: a {2n-1}
+out: main {2n}

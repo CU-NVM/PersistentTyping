@@ -1,0 +1,8 @@
+# Types in namespaces: forward declarations reopen every enclosing namespace,
+# inline ones included, and the header spells each type fully qualified even
+# when the source relied on `using namespace`.
+header: namespace app { struct Node; }
+header: namespace app { namespace detail { struct Leaf; } }
+header: namespace lib { inline namespace v1 { struct Item; } }
+header: pmem_ptr<persistent<app::Node>> node;
+header: pmem_ptr<persistent<app::detail::Leaf>> leaf;

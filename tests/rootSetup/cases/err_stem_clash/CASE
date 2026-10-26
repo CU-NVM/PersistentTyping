@@ -1,0 +1,4 @@
+# Static roots are prefixed with the file stem only, so two a.cpp files in
+# different directories collide.
+expect: fail
+error: both map to field 'a__x'

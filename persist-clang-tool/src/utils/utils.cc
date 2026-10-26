@@ -70,6 +70,45 @@ findCXXRecordDeclByName(clang::ASTContext& context, const std::string& name) {
     return matches.empty() ? nullptr : matches.front();
 }
 
+bool isRootCandidate(const clang::VarDecl* vd) {
+    if (llvm::isa<clang::ParmVarDecl>(vd)) return false;
+    const clang::DeclContext* dc = vd->getDeclContext();
+    if (dc->isTranslationUnit()) return true;
+    if (auto* fd = llvm::dyn_cast<clang::FunctionDecl>(dc)) {
+        if (fd->isMain()) return true;
+    }
+    return false;
+}
+
+std::optional<std::string>
+tryExtractPersistentTypeName(clang::QualType qt,
+                             const clang::PrintingPolicy& policy)
+{
+    if (qt->isPointerType()) qt = qt->getPointeeType();
+    const clang::CXXRecordDecl* rd = qt->getAsCXXRecordDecl();
+    if (!rd) return std::nullopt;
+    const auto* ctsd = llvm::dyn_cast<clang::ClassTemplateSpecializationDecl>(rd);
+    if (!ctsd) return std::nullopt;
+    if (ctsd->getSpecializedTemplate()->getNameAsString() != "persistent") return std::nullopt;
+    return ctsd->getTemplateArgs()[0].getAsType().getAsString(policy);
+}
+
+std::string extractInitArgs(const clang::CXXNewExpr* newExpr,
+                            clang::ASTContext& context)
+{
+    clang::SourceRange parens = newExpr->getDirectInitRange();
+    if (parens.isInvalid()) return "";
+    std::string text = clang::Lexer::getSourceText(
+        clang::CharSourceRange::getTokenRange(parens),
+        context.getSourceManager(),
+        context.getLangOpts()).str();
+
+    if (text.size() >= 2 && text.front() == '(' && text.back() == ')') {
+        return text.substr(1, text.size() - 2);
+    }
+    return "";
+}
+
 
 std::optional<std::string>
 unwrapPersistentType(clang::QualType qt,

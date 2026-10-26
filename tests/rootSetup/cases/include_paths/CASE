@@ -1,0 +1,5 @@
+# One header reached through two different spellings is still one file:
+# locations use the real path.
+flags: -Iinc
+dumponce: declaration persistent<int>*
+out: shared {n}

@@ -1,0 +1,9 @@
+# Command-line handling: a header among the inputs is not a TU, the value of
+# -include is not an input, and the old `files -- flags` form still works.
+inputs: main.cpp
+toolargs: counter.hpp -include forced.cpp --
+nolog: on file: forced.cpp
+nolog: on file: counter.hpp
+unchanged: counter.hpp
+unchanged: forced.cpp
+out: counter {n}

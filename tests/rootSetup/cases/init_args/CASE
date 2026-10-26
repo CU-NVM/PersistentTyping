@@ -1,0 +1,11 @@
+# The constructor arguments of `new persistent<T>(args)` are carried over as
+# source text: none, empty parens, an expression, a call, a double.
+in main.cpp: bare  = pmem_get_or_create<persistent<int>>(__pers_get_root()->bare);
+in main.cpp: empty = pmem_get_or_create<persistent<int>>(__pers_get_root()->empty);
+in main.cpp: (__pers_get_root()->expr, 2 + 3 * 4)
+in main.cpp: (__pers_get_root()->call, base() + 2)
+out: bare {n}
+out: empty {n}
+out: expr {n+14}
+out: call {n+42}
+out: dbl {n+1}

@@ -1,0 +1,8 @@
+Running RootSetupFrontendAction on file: /home/kidus/PersistentTyping/tests/constructors/outputs/base_init.cpp
+wrote rewritten source to /home/kidus/PersistentTyping/tests/constructors/outputs/base_init.cpp
+wrote rewritten source to /home/kidus/PersistentTyping/tests/constructors/outputs/base_init_pers_root.hpp
+Running RecursePersistentFrontendAction on file: /home/kidus/PersistentTyping/tests/constructors/outputs/base_init.cpp
+error: base-class initializer in constructor of Widget is not supported (no inheritance in persistent<T>)
+Handling translation unit in RecurseConsumer
+Starting RecursePersistentTyper
+wrote rewritten source to /home/kidus/PersistentTyping/tests/constructors/outputs/base_init.cpp

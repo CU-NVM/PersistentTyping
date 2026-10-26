@@ -1,0 +1,3 @@
+# A root whose T comes from a system header is rejected for now.
+expect: fail
+error: comes from a system header

@@ -1,0 +1,6 @@
+# A namespace-scope global has a single copy, like a file-scope one, but
+# isRootCandidate only accepts the translation unit as its context. The root
+# is silently skipped and its `new` left untransformed.
+xfail: namespace-scope roots are not collected
+header: hits
+out: hits {n}

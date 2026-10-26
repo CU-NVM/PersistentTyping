@@ -1,0 +1,5 @@
+# A root without an init site still gets its field, and the file declaring
+# it is left alone: only files with init sites, and main's, are rewritten.
+header: pmem_ptr<persistent<int>> unused;
+unchanged: a.cpp
+out: used {n}

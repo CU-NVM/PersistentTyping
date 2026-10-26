@@ -1,0 +1,10 @@
+# A header with an extern root is seen by four TUs but recorded once: records
+# are keyed by file:line:col, not per TU.
+dump: == roots: 1 ==
+dumponce: declaration persistent<int>*
+unchanged: a.cpp
+unchanged: b.cpp
+unchanged: c.cpp
+out: a {3n-2}
+out: b {3n-1}
+out: main {3n}

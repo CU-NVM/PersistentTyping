@@ -1,0 +1,12 @@
+# Locals of main() are roots: main runs once, so each has a single copy.
+# Covers init in the declaration, a later assignment, and a nested block,
+# which is not a DeclContext of its own.
+dump: [main-local]
+header: pmem_ptr<persistent<int>> a;
+header: pmem_ptr<persistent<long>> b;
+header: pmem_ptr<persistent<int>> inner;
+in main.cpp: persistent<int>* a = pmem_get_or_create<persistent<int>>(__pers_get_root()->a, 10);
+in main.cpp: b = pmem_get_or_create<persistent<long>>(__pers_get_root()->b, 20);
+out: inner {n+30}
+out: a {n+10}
+out: b {n+20}

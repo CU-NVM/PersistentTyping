@@ -1,0 +1,15 @@
+# An external root: declared `extern` in a header, defined and initialised in
+# a.cpp, used from main.cpp. The extern and the definition merge into one
+# root, and main.cpp sees the same object a.cpp created.
+dump: == roots: 1 ==
+dump: declaration persistent<int>*
+dump: definition  persistent<int>*
+header: pmem_ptr<persistent<int>> counter;
+in a.cpp: #include "main_pers_root.hpp"
+in a.cpp: counter = pmem_get_or_create<persistent<int>>(__pers_get_root()->counter, 100);
+in main.cpp: #include "main_pers_root.hpp"
+in main.cpp: __pers_root* __pers_get_root() {
+notin a.cpp: __pers_root* __pers_get_root() {
+unchanged: counter.hpp
+out: a {2n+99}
+out: main {2n+100}

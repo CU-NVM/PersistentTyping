@@ -1,0 +1,5 @@
+# Running root-setup on its own output must change nothing; today it adds a
+# second #include and a second __pers_get_root() definition.
+xfail: root-setup is not idempotent
+passes: 2
+out: counter {n}

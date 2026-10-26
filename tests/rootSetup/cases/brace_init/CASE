@@ -1,0 +1,3 @@
+# `new persistent<T>{args}`: list-initialisation must keep its arguments too.
+in main.cpp: (__pers_get_root()->c, 5)
+out: c {n+5}

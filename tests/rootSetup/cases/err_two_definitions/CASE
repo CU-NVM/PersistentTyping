@@ -1,0 +1,4 @@
+# The same external root defined in two files: a link error later, reported
+# here instead.
+expect: fail
+error: root 'x' is defined 2 times

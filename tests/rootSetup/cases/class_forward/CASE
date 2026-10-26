@@ -1,0 +1,8 @@
+# Plain classes are forward-declared in the root header with their own tag
+# keyword, rather than included, wherever they are defined.
+header: struct Box;
+header: class Shape;
+header: struct Here;
+header: pmem_ptr<persistent<Box>> box;
+notin main_pers_root.hpp: box.hpp
+notin main_pers_root.hpp: shape.hpp

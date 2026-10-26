@@ -1,0 +1,4 @@
+# A root initialised at file scope: the rewritten initializer calls
+# __pers_get_root() during static initialisation, before main().
+in main.cpp: persistent<int>* g = pmem_get_or_create<persistent<int>>(__pers_get_root()->g, 3);
+out: g {n+3}

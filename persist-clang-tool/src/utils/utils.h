@@ -13,6 +13,7 @@
 #include "clang/Tooling/CompilationDatabase.h"
 #include <clang/AST/Decl.h>
 #include <clang/AST/Expr.h>
+#include <clang/AST/ExprCXX.h>
 #include <clang/ASTMatchers/ASTMatchers.h>
 #include <clang/Rewrite/Core/Rewriter.h>
 #include "clang/AST/ASTConsumer.h"
@@ -71,6 +72,20 @@ bool isPersistenceAwareType(clang::QualType qt);
 
 
 
+
+// True if `vd` can be a root: a translation-unit-scope variable or a local
+// of main(). Parameters never are.
+bool isRootCandidate(const clang::VarDecl* vd);
+
+// If `qt` is `persistent<T>` or `persistent<T>*`, returns the name of T.
+std::optional<std::string>
+tryExtractPersistentTypeName(clang::QualType qt,
+                             const clang::PrintingPolicy& policy);
+
+// The constructor arguments of `new T(args)` as source text, without the
+// parentheses. Empty for `new T` and `new T()`.
+std::string extractInitArgs(const clang::CXXNewExpr* newExpr,
+                            clang::ASTContext& context);
 
 const clang::CXXRecordDecl* findCXXRecordDeclByName(clang::ASTContext& context, const std::string& name);
 

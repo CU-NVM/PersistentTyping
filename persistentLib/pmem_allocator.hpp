@@ -27,6 +27,9 @@ inline const char* get_pool_path() {
 
 __attribute__((constructor))
 inline void pmem_alloc_init() {
+    // Every TU that includes this header registers its own copy of this
+    // constructor, so it runs once per TU; only the first may open the pool.
+    if (global_pool != nullptr) return;
     if (access(get_pool_path(), F_OK) == 0) {
         // Pool already exists, open it
         global_pool = pmemobj_open(get_pool_path(), "pmem_pool");

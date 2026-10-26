@@ -22,3 +22,7 @@ Output/*
 # committed into this repo as symlinks.
 idea.md
 design.md
+
+# Python bytecode
+__pycache__/
+*.pyc

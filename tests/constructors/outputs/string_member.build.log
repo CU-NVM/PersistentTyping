@@ -1,0 +1,13 @@
+outputs/string_member.cpp:36:57: error: no matching constructor for initialization of 'pmem_string'
+   36 |     persistent(const char * n, const std::string & l) : label(l) {
+      |                                                         ^     ~
+/home/kidus/PersistentTyping/persistentLib/pmem_string.hpp:37:5: note: candidate constructor not viable: no known conversion from 'const std::string' (aka 'const basic_string<char>') to 'const char *' for 1st argument
+   37 |     pmem_string(const char* s) : data_(OID_NULL), size_(0) { assign(s); }
+      |     ^           ~~~~~~~~~~~~~
+/home/kidus/PersistentTyping/persistentLib/pmem_string.hpp:45:5: note: candidate constructor not viable: no known conversion from 'const std::string' (aka 'const basic_string<char>') to 'const pmem_string' for 1st argument
+   45 |     pmem_string(const pmem_string&)            = delete;
+      |     ^           ~~~~~~~~~~~~~~~~~~
+/home/kidus/PersistentTyping/persistentLib/pmem_string.hpp:36:5: note: candidate constructor not viable: requires 0 arguments, but 1 was provided
+   36 |     pmem_string() : data_(OID_NULL), size_(0) {}
+      |     ^
+1 error generated.

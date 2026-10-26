@@ -1,0 +1,4 @@
+# __pers_get_root() is defined next to main(), so main() must be among the
+# given files.
+expect: fail
+error: no main() in the given files

@@ -1,0 +1,10 @@
+# Two `static` roots with the same name in different files are different
+# variables, so they get separate fields, prefixed with their file's stem.
+dump: == roots: 2 ==
+dump: [static]
+header: pmem_ptr<persistent<int>> a__counter;
+header: pmem_ptr<persistent<int>> main__counter;
+in a.cpp: (__pers_get_root()->a__counter, 100)
+in main.cpp: (__pers_get_root()->main__counter, 0)
+out: a {n+100}
+out: main {n}

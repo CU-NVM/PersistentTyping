@@ -1,0 +1,4 @@
+# An extern root with no definition in any of the given files.
+expect: fail
+error: root 'x' is declared at
+error: but not defined in any of the given files

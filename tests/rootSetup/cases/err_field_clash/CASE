@@ -1,0 +1,4 @@
+# Different roots, same field name: a main-local is not prefixed, so it
+# collides with an external root of the same name.
+expect: fail
+error: both map to field 'counter'

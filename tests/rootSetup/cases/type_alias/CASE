@@ -1,0 +1,7 @@
+# Roots spelled through a `using` alias and a typedef are still found, and
+# the rewrite names the underlying persistent<T>.
+header: pmem_ptr<persistent<int>> c;
+header: pmem_ptr<persistent<long>> d;
+in main.cpp: c = pmem_get_or_create<persistent<int>>(__pers_get_root()->c, 3);
+out: c {n+3}
+out: d {n+7}

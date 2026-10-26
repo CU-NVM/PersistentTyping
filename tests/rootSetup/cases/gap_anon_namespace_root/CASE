@@ -1,0 +1,4 @@
+# An anonymous-namespace global: internal linkage, like `static`.
+xfail: anonymous-namespace roots are not collected
+header: main__hits
+out: hits {n}

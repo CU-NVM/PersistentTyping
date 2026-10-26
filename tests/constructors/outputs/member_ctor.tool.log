@@ -1,0 +1,7 @@
+Running RootSetupFrontendAction on file: /home/kidus/PersistentTyping/tests/constructors/outputs/member_ctor.cpp
+wrote rewritten source to /home/kidus/PersistentTyping/tests/constructors/outputs/member_ctor.cpp
+wrote rewritten source to /home/kidus/PersistentTyping/tests/constructors/outputs/member_ctor_pers_root.hpp
+Running RecursePersistentFrontendAction on file: /home/kidus/PersistentTyping/tests/constructors/outputs/member_ctor.cpp
+Handling translation unit in RecurseConsumer
+Starting RecursePersistentTyper
+wrote rewritten source to /home/kidus/PersistentTyping/tests/constructors/outputs/member_ctor.cpp

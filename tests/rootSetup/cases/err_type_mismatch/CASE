@@ -1,0 +1,6 @@
+# Two declarations of one external root disagree on T. Each file compiles on
+# its own, so only the whole-program view catches it. Nothing is written,
+# though both files have valid init sites.
+expect: fail
+error: root 'x' is persistent<
+error: but persistent<
