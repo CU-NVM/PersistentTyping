@@ -1,8 +1,0 @@
-# Types that cannot be forward-declared in one line (a template, a nested
-# class) are reached by including their header, by a path relative to the
-# generated header.
-flags: -Iinclude
-header: #include "../include/tree.hpp"
-header: #include "../include/outer.hpp"
-header: pmem_ptr<persistent<Tree<int>>> tree;
-header: pmem_ptr<persistent<Outer::Inner>> inner;

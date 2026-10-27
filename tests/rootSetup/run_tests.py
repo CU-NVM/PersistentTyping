@@ -7,6 +7,8 @@ Usage:
     ./run_tests.py -v                  print the tool / compiler / program
                                        output of each failing case
     ./run_tests.py --lib DIR           use DIR instead of persistentLib/
+    ./run_tests.py --e2e               also run recurse-persistent before
+                                       compiling, as `--pass=all` would
 
 Each case is copied to outputs/<case>/ and checked in this order; the first
 failing step is reported:
@@ -18,6 +20,7 @@ failing step is reported:
                header written
     rewrite    the generated <main>_pers_root.hpp contains every `header:`
                line, and the rewritten files satisfy `in`/`notin`/`unchanged`
+    recurse    --e2e only: recurse-persistent exits 0 with no `error:`
     compile    all rewritten .cpp files compile and link into one program
     runs       the program, run `runs:` times on one fresh pool, prints the
                `out:` lines each time; counters that keep growing prove the
@@ -46,7 +49,8 @@ CASE file directives (one per line, `#` lines describe the case):
 
 Only fundamental persistent<T> roots are run: a class T needs the
 recurse-persistent pass for persistent<T> to allocate in pmem, which
-tests/constructors covers. Class roots here stop at `compile`.
+tests/constructors covers. Class roots here stop at `compile`, which with
+--e2e also checks that the generated specializations compile.
 
 Each run gets its own pool file under outputs/ (PERSISTENT_POOL_PATH),
 deleted when the case finishes.
@@ -68,7 +72,7 @@ TOOL = ROOT / "persist-clang-tool" / "build" / "bin" / "persist-tool"
 LIB = ROOT / "persistentLib"
 TIMEOUT = 120
 
-STEPS = ["dump", "tool", "rewrite", "compile", "runs"]
+STEPS = ["dump", "tool", "rewrite", "recurse", "compile", "runs"]
 
 
 class CaseFailed(Exception):
@@ -134,7 +138,7 @@ def expand(line, n):
     return re.sub(r"\{(\d*)n([+-]\d+)?\}", sub, line)
 
 
-def check(name, spec, lib):
+def check(name, spec, lib, e2e=False):
     work = OUT / name
     shutil.rmtree(work, ignore_errors=True)
     shutil.copytree(CASES / name, work, ignore=shutil.ignore_patterns("CASE"))
@@ -201,6 +205,14 @@ def check(name, spec, lib):
         if (work / f).read_bytes() != original[Path(f)]:
             raise CaseFailed("rewrite", f"{f} was modified", (work / f).read_text())
 
+    # recurse: the rest of `--pass=all`, after the root-setup checks above
+    if e2e:
+        code, log = run([TOOL, "--pass=recurse-persistent", *inputs, *spec.toolargs,
+                         *toolflags], work)
+        errs = [l for l in log.splitlines() if "error:" in l]
+        if code != 0 or errs:
+            raise CaseFailed("recurse", errs[0].strip() if errs else f"exited {code}", log)
+
     # compile
     binary = work / "prog"
     code, clog = run(["clang++", *toolflags, "-Wno-unused-variable", *inputs,
@@ -229,6 +241,7 @@ def main():
     ap.add_argument("cases", nargs="*")
     ap.add_argument("-v", "--verbose", action="store_true")
     ap.add_argument("--lib", type=Path, default=LIB)
+    ap.add_argument("--e2e", action="store_true")
     args = ap.parse_args()
 
     if not TOOL.exists():
@@ -242,7 +255,7 @@ def main():
     for name in names:
         spec = Spec(CASES / name / "CASE")
         try:
-            check(name, spec, args.lib.resolve())
+            check(name, spec, args.lib.resolve(), args.e2e)
             status, detail, log = "PASS", "", ""
         except CaseFailed as e:
             status, detail, log = "FAIL", f"[{e.step}] {e.why}", e.log
