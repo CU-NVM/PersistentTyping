@@ -1,0 +1,5 @@
+# A pointer field in pmem cannot point at a string literal, which is in DRAM.
+pass: all
+expect: fail
+error: field 'tag': a string literal is in DRAM
+error: a string literal is in DRAM, and a pointer in pmem cannot point at it

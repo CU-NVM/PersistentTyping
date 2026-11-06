@@ -1,5 +1,4 @@
 #include <iostream>
-#include "numatype.hpp"
 #include <cstring>
 #include <cstdint>
 

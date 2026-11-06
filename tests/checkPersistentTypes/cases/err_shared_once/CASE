@@ -1,0 +1,4 @@
+# An error in a header shared by two TUs is reported once.
+flags: -Iinclude
+expect: fail
+erroronce: a pmem pointer to a DRAM target

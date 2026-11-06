@@ -1,0 +1,5 @@
+# A namespace-scope global has a single copy, like a file-scope one, so it
+# is a root; its uses, spelled app::hits, become its slot.
+header: hits
+in main.cpp: bump(__pers_get_root()->hits.get(), "hits");
+out: hits {n}

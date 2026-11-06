@@ -3,8 +3,10 @@
 header: pmem_ptr<persistent<int>> counter;
 header: __pers_root* __pers_get_root();
 in main.cpp: #include "main_pers_root.hpp"
-in main.cpp: counter = pmem_get_or_create<persistent<int>>(__pers_get_root()->counter, 0);
+in main.cpp: pmem_get_or_create<persistent<int>>(__pers_get_root()->counter, 0);
 in main.cpp: __pers_root* __pers_get_root() {
 notin main.cpp: new persistent
+notin main.cpp: persistent<int>* counter;
+in main.cpp: bump(__pers_get_root()->counter.get(), "counter");
 out: counter {n}
 runs: 3

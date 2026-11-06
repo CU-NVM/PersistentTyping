@@ -9,6 +9,7 @@ Usage:
     ./run.py <benchmark>            # compile + run once
     ./run.py <benchmark> --fresh    # wipe pmem pool first (test first-run)
     ./run.py <benchmark> --runs N   # run N times in succession
+    ./run.py <benchmark> -- ARGS    # pass ARGS to the benchmark binary
 """
 
 import argparse
@@ -61,6 +62,10 @@ BENCHMARKS = {
         "kind":   "make",
         "binary": "bin/datastructures",
     },
+    "ycsb": {
+        "kind":   "make",
+        "binary": "bin/ycsb",
+    },
 }
 
 
@@ -94,7 +99,11 @@ def main() -> None:
                         help=f"Wipe {PMEM_POOL_PATH} before running")
     parser.add_argument("--runs", type=int, default=1,
                         help="Number of consecutive runs (default: 1)")
-    args = parser.parse_args()
+    # everything after -- goes to the benchmark binary
+    argv = sys.argv[1:]
+    split = argv.index("--") if "--" in argv else len(argv)
+    args = parser.parse_args(argv[:split])
+    bench_args = argv[split + 1:]
 
     name = args.benchmark
     bm = BENCHMARKS[name]
@@ -115,7 +124,7 @@ def main() -> None:
     for i in range(args.runs):
         if args.runs > 1:
             print(f"\n=== run {i + 1} / {args.runs} ===")
-        run(f"./{bm['binary']}", cwd=bench_dir)
+        run(" ".join([f"./{bm['binary']}"] + bench_args), cwd=bench_dir)
 
 
 if __name__ == "__main__":

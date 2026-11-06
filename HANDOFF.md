@@ -15,11 +15,60 @@ All three PDFs are available in the project root for re-reading.
 
 ## Current status
 
-**Phase 5 is functionally complete on the four pedagogical benchmarks — counter, stack, hanoi, and DS all persistify, compile, and persist across runs.** `persistent<T>` snapshots into the active PMDK transaction's undo log on every write (Phase 2 = durability + atomicity in one mechanism), and as of 2026-08-11 unlogged writes to scalars are *inexpressible* rather than merely discouraged. `pmem_ptr<T>` hides OID translation; `pmem_string` holds variable-length strings in pmem; `pmem_get_or_create<T>(slot, args...)` hides find-or-create. **Phase 5.1** emits `__pers_root` and rewrites `new persistent<T>(args)`, now handling assignment-form initialisation and filtering out parameters and non-`main` locals. **Phase 5.2** emits a `template<> class persistent<T>` for every user-defined T reachable from `__pers_root`, multi-file safe. **Phase 5.3** (body rewriting) is folded into the recurse pass as visitors over the original AST: new-expr rewriting, LHS rewriting for new-init locals, and `.get()` insertion for pmem_ptr field reads. Method bodies are wrapped in transactions, using an IIFE to preserve non-void return values.
+**Phase 5 is functionally complete on the four pedagogical benchmarks — counter, stack, hanoi, and DS all persistify, compile, and persist across runs.** `persistent<T>` snapshots into the active PMDK transaction's undo log on every write (Phase 2 = durability + atomicity in one mechanism), and as of 2026-08-11 unlogged writes to scalars are *inexpressible* rather than merely discouraged. `pmem_ptr<U>` (since 2026-10-27 the same type as `persistent<U*>`) hides OID translation; `pmem_get_or_create<T>(slot, args...)` hides find-or-create. `pmem_string` was removed on 2026-10-27; a `char*` field is a `pmem_ptr<persistent<char>>` array (see the pointers/arrays entry below). **Phase 5.1** emits `__pers_root` and rewrites `new persistent<T>(args)`, now handling assignment-form initialisation and filtering out parameters and non-`main` locals. **Phase 5.2** emits a `template<> class persistent<T>` for every user-defined T reachable from `__pers_root`, multi-file safe. **Phase 5.3** (body rewriting) is folded into the recurse pass as visitors over the original AST: new-expr rewriting, LHS rewriting for new-init locals, and `.get()` insertion for pmem_ptr field reads. Method bodies are wrapped in transactions, using an IIFE to preserve non-void return values.
 
 **The current gating item is a real benchmark, not tool features.** Run `./persistify.py <bench>` then `./run.py <bench> --fresh --runs 2`. See the YCSB gap analysis section for what a production workload still needs.
 
 ## What's been done so far
+
+**Rule 2 of the P(T) closure: `persistent<T*>` needs a persistent pointee (2026-11-06, branch `pointers-arrays`)**
+
+First item of the closure document's to-do list (#3, prepared for the 5 Nov advisor meeting). `persistent<Node*>` is now an error instead of being normalised to `persistent<persistent<Node>*>`.
+- **Library.** The pointee `static_assert` in `persistent<U*>` is no longer under `PERSIST_TRANSFORMED`, has a new message, and stays quiet for `void`/function pointees, which have their own messages.
+- **normalize is now check-only and rewrites nothing, and is renamed `check-persistent-types`** (files `checkPersistentTypes.{h,cc}`, `checkPersistentTypesConsumer`, `checkPersistentTypesFrontendAction`; `--pass=check-persistent-types`; tests in `tests/checkPersistentTypes`; `persistify.py` stage `out_check`). The later passes read types by their canonical form, so `persistent<persistent<Node>*>` and `pmem_ptr<persistent<Node>>` need no rewriting. `extractTargetFromPersistentType(t)` returns the `T` of `persistent<T>` by canonical type, so spaces, aliases and `pmem_ptr` don't matter. `checkPersistentType` walks every pmem layer with it and reports three errors:
+  - Rule 2: a pmem pointer to a non-persistent target. The fix is suggested in the long form, using `translateType(..., aliasPointers=false)`. This check is needed because the library's `static_assert` fires only when the type is completed. `persistent<Node*>* p`, parameters, return types, aliases and template arguments never complete it.
+  - One layer wrapped twice, as in `persistent<persistent<int>>`.
+  - `persistent<T[N]>`.
+  - A pmem pointer to `void` or to a function. The library's `static_assert`s say the same, but only where the type is completed.
+- **Aliases of persistent types are discouraged but handled.** Users should write `persistent<...>` directly, with no `using PNode = persistent<Node>`. If they do use one, the pass still works: it *finds* spellings by canonical type (`persistentSpecialization`), not by template name. That way `template<class T> using P = persistent<T>; P<Node*>* x;` is checked too; before this fix it slipped through. Test: `err_aliases`.
+- **Removed from the pass, to keep it simple:** the rewriting itself, the macro check, and the reporting of `translateType` failures (references, unions, `std::` types, class templates, inheritance, virtual methods). The library's `static_assert`s and the later passes still catch most of these. The `err_library`, `err_reference` and `err_macro` cases are deleted. They were untracked, so they are gone.
+- **Tests.** `tests/lib` gains a `// untransformed` marker for `compile_fail` cases. In `tests/checkPersistentTypes` (was `tests/normalize`), `spellings`, `shared_header` and `positions` check that legal spellings pass unchanged and that every position is checked. `err_raw_pointee`, `err_raw_pointee_object`, `err_double_wrap`, `err_void_function_pointer` and `err_aliases` are new. `err_shared_once` uses a Rule-2 mistake, and `e2e_hashtable` no longer double-wraps its root. The orphaned `tests/persistent_test.cpp` (already broken at HEAD, and testing by-value stack `persistent<>` that R2 forbids) is deleted.
+- **Results.** lib 17/17, checkPersistentTypes 19/19, rootSetup 40/40, constructors 14 (only `base_init` XFAIL), pointers 4/4.
+- **Next on the closure to-do list:** #4, where only static-storage `persistent<...>` objects are roots and `persistent<T>*` globals and `main` locals stay in DRAM. That reworks `rootTypeOf`/`RootShape` in root-setup.
+- **Follow-up:** design.md is stale beyond Rule 2 (`pmem_string`, the pass list) and should be brought in line with the closure document.
+
+**Pointers, arrays, root arrays, normalize pass (2026-10-27, branch `pointers-arrays`)**
+
+Six stages, each tested; the current design is summarised in [Docs/clang-tool.md](Docs/clang-tool.md) ("Current design") and [Docs/PersistentLib.md](Docs/PersistentLib.md) §3–4.
+
+- **Library.**
+  - `persistent<U*>` replaces the old `pmem_ptr` class, and `pmem_ptr<X>` is now an alias for it. It stores an OID, converts implicitly to `U*`, logs writes, and throws on a target outside the pool.
+  - The primitive `persistent<T>` is arithmetic types and enums only.
+  - Under `PERSIST_TRANSFORMED`, an unspecialised `persistent<C>` is a compile error.
+  - A pmem slot assigned outside a transaction gets one of its own.
+  - `persist_detail::chars` / `writable` give C strings in pmem to the C library.
+  - `pmem_string` is deleted.
+- **One P.** `utils::translateType` is the only implementation of the type translation, and has a table-driven unit test (`translate-type-test`). It fixes the silent-DRAM bug: user-written `persistent<C>` and `pmem_ptr<persistent<C>>` fields never got C specialised.
+- **recurse-persistent.**
+  - `new T[n]` becomes `new P(T)[n]`, and every specialization gets `operator new[]`/`delete[]`.
+  - Locals, parameters and return types use L(U\*) = P(U)\*.
+  - C-string calls are wrapped.
+  - Specializations go at global scope after the outermost enclosing namespace or class, ordered so a nested class's comes first (namespaced and nested classes failed to compile before).
+  - Overloaded operators are now an error instead of being dropped silently.
+  - The `.get()` rewriter, the C-string idiom rewriter and the dead helpers are deleted.
+- **normalize (new pass).** Rewrites user-written `persistent<...>` spellings to P's, once per file across TUs. Idempotent. *(Since 2026-11-06 it is check-only and rewrites nothing, see the Rule 2 entry above.)*
+- **root-setup.**
+  - Root arrays (`persistent<T>* r[N]`, `persistent<T>** r`) are supported.
+  - Option (b): a root is its `__pers_root` slot, its declarations go away, and every use in every file becomes `__pers_get_root()->r`, with `.get()` on reads. This applies to scalars too.
+  - Namespace-scope, anonymous-namespace and static-local roots are supported.
+  - Rerunning root-setup is a no-op, and `new T{...}` init arguments are kept.
+  - All four `gap_*` cases are fixed and renamed. Variables that mention `persistent<>` but cannot be roots are errors.
+- **Array sizes across runs are the program's responsibility** (documented, no check).
+- **Tests:**
+  - new `tests/lib`, `tests/normalize`, `tests/pointers`;
+  - rootSetup grows to 40 cases;
+  - constructors' `string_member` is rewritten for C strings;
+  - every suite passes apart from `base_init`, which is an expected failure: inheritance is not supported.
 
 **Environment (this machine, `kidus@ecee-bilbo`)**
 - Ubuntu 22.04, kernel 6.8, 32 GB DRAM, no real Optane.
@@ -43,9 +92,8 @@ All three PDFs are available in the project root for re-reading.
      - **Class**: inherits from `T`, default ctor + perfect-forwarding variadic ctor.
 - [`tests/pmem_allocator_test.cpp`](tests/pmem_allocator_test.cpp) — raw allocator: alloc, write a pattern, read it back, free.
 - [`tests/persistent_allocator_test.cpp`](tests/persistent_allocator_test.cpp) — STL contract: `std::vector` (allocate/deallocate/construct), `std::list` (rebind + converting ctor), allocator equality.
-- [`tests/persistent_test.cpp`](tests/persistent_test.cpp) — `persistent<T>` end-to-end: primitive (`int`, `int*`), class (`Point`), and verification that `new persistent<int>` lands inside the pmem pool. **NOTE: must be run with the increment wrapped in `transaction::run` now that Phase 2 is in — tests need updating.**
 
-All three tests build with `clang++ -std=c++17 -I.. <file>.cpp -o <bin> -lpmemobj` and pass.
+Both tests build with `clang++ -std=c++17 -I.. <file>.cpp -o <bin> -lpmemobj` and pass.
 
 **Phase 2 library + first real program (2026-05-13)**
 - `persistent<T>::store()` now calls `pmemobj_tx_add_range_direct(&contents, sizeof(T))` before the write. The snapshot goes into the *active* transaction's undo log, giving both durability AND atomicity from the same mechanism. If no transaction is active, the PMDK call returns nonzero and `store()` throws `std::runtime_error("Failed to add range to transaction")`. The "must be inside a transaction" contract is enforced at runtime, loudly, at the first stray write.
@@ -266,7 +314,7 @@ The work has therefore shifted from "make the tool work" to "make the tool work 
 
 1. ~~**`wrapFieldType` passthrough**~~ — done, along with automatic `char*`/`std::string` → `pmem_string` mapping and the `CStringIdiomRewriter`. See the library-hardening entry above, and [`kvnode/`](kvnode/) for the regression test.
 
-2. **Array support in the tool** — now the gating item, and the last structural gap before a hash table works. `HashTable::table` is `HashNode**` allocated with `new HashNode*[bucket_count]`. Three sub-parts: `wrapFieldType` needs an array case (currently yields `persistent<HashNode**>`, a raw pointer in pmem that is stale on run 2 — the right mapping is nested `pmem_ptr`, per the reasoning in the `pmem_string` section of PersistentLib.md); `NewExprRewriter` needs to handle `new[]` for user-class element types; and `AssignmentInitVisitor` needs to accept an `ArraySubscriptExpr` LHS for `table[i] = new HashTable(...)`. Extend [`kvnode/`](kvnode/) with a bucket array to drive this — it is already the right shape.
+2. ~~**Array support in the tool**~~ — done 2026-10-27 on branch `pointers-arrays` (bucket arrays, field arrays, root arrays, nested pointers; see the entry above). The original note follows. Array support was the gating item, and the last structural gap before a hash table works. `HashTable::table` is `HashNode**` allocated with `new HashNode*[bucket_count]`. Three sub-parts: `wrapFieldType` needs an array case (currently yields `persistent<HashNode**>`, a raw pointer in pmem that is stale on run 2 — the right mapping is nested `pmem_ptr`, per the reasoning in the `pmem_string` section of PersistentLib.md); `NewExprRewriter` needs to handle `new[]` for user-class element types; and `AssignmentInitVisitor` needs to accept an `ArraySubscriptExpr` LHS for `table[i] = new HashTable(...)`. Extend [`kvnode/`](kvnode/) with a bucket array to drive this — it is already the right shape.
 
 4. **Scale up to real YCSB** — thread-safe `pmem_get_or_create`, multi-TU root emission, and the user-form port. See the YCSB gap analysis section for detail on each.
 
@@ -355,10 +403,10 @@ After pulling this file on another machine:
 1. Open Claude Code in `~/PersistentTyping/`.
 2. Say something like: *"Read HANDOFF.md and pick up at the next concrete step."*
 3. Confirm pmem mount is live (`mount | grep pmem`). If not, re-mount per Useful one-liners.
-4. Rebuild and run the three tests in `tests/` as a sanity check that nothing rotted:
+4. Rebuild and run the two allocator tests in `tests/` as a sanity check that nothing rotted (the suites under `tests/lib`, `tests/checkPersistentTypes`, `tests/rootSetup`, `tests/constructors` and `tests/pointers` are the real checks):
    ```bash
    cd tests
-   for t in pmem_allocator_test persistent_allocator_test persistent_test; do
+   for t in pmem_allocator_test persistent_allocator_test; do
      rm -f /mnt/pmem-emu/global_persistent_pool
      clang++ -std=c++17 -I.. ${t}.cpp -o $t -lpmemobj && ./$t
    done

@@ -1,0 +1,4 @@
+# Rerunning root-setup leaves its own global-initialiser helper alone; it is
+# not mistaken for a new root.
+passes: 2
+out: g {n+3}

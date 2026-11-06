@@ -1,0 +1,6 @@
+# Rule 2 where the type is completed (an object, new, sizeof): the library's
+# static_assert stops the parse, with the same wording check-persistent-types uses.
+expect: fail
+error: a pmem pointer's target must be persistent<...> too
+error: persistenttype.hpp
+unchanged: main.cpp

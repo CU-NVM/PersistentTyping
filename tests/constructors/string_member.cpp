@@ -1,26 +1,35 @@
 // string_member.cpp
 //
-// String fields, which the tool remaps to pmem_string: a `char*` filled with
-// the new[] + strcpy idiom in the body, a `std::string` built in the
-// initialiser list, and a `const char*` with an in-class initialiser.
+// C string fields. A `char*` field is a pmem pointer to an array of
+// persistent<char>, filled with the new[] + strcpy idiom in the constructor
+// and replaced in rename() through a local char*; a `char tag[12]` field is
+// built with strncpy + strcat. Both are read with strlen, strcmp and
+// `std::cout <<`, and every write through a C function is logged first.
 
 #include "persistenttype.hpp"
 #include "harness.hpp"
 #include <cstring>
-#include <string>
 
 class Widget {
 public:
-    char*       name;
-    std::string label;
-    const char* tag = "default-tag";
-    Widget(const char* n, const std::string& l) : label(l) {
+    char* name;
+    char  tag[12];
+    Widget(const char* n) {
         name = new char[std::strlen(n) + 1];
         std::strcpy(name, n);
+        std::strncpy(tag, "tag-", sizeof(tag));
+        std::strcat(tag, n);
         harness::crash_point_ctor();
     }
+    void rename(const char* n) {
+        char* fresh = new char[std::strlen(n) + 1];
+        std::strcpy(fresh, n);
+        delete[] name;
+        name = fresh;
+    }
     void print() const {
-        std::cout << "STATE name=" << name << " label=" << label << " tag=" << tag << "\n";
+        std::cout << "STATE name=" << name << " len=" << std::strlen(name)
+                  << " tag=" << tag << " is_beta=" << (std::strcmp(name, "beta") == 0) << "\n";
     }
 };
 
@@ -31,7 +40,8 @@ public:
     void bump() { runs++; }
     bool has() const { return w != nullptr; }
     void make() {
-        w = new Widget("alpha", std::string("beta"));
+        w = new Widget("alpha");
+        w->rename("beta");
         harness::abort_point();
         harness::crash_point_make();
     }

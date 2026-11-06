@@ -1,0 +1,17 @@
+# Rule 2: in persistent<U*>, U must be persistent<...> itself. None of these
+# spellings completes the type, so the library's static_assert never fires
+# and only check-persistent-types can report them. The suggested fix is the long form.
+expect: fail
+error: main.cpp:4:1: 'persistent<Node *>' is a pmem pointer to a DRAM target
+error: main.cpp:5:1: 'persistent<int *>'
+error: main.cpp:6:1: 'persistent<Node **>'
+error: main.cpp:7:1: 'persistent<const char *>'
+error: main.cpp:8:1: 'persistent<Node *>' is a pmem pointer to a DRAM target
+error: main.cpp:9:
+error: main.cpp:10:
+error: main.cpp:11:1:
+error: main.cpp:11:22:
+error: write persistent<persistent<Node>*>
+error: write persistent<persistent<persistent<Node>*>*>
+error: write persistent<const persistent<char>*>
+unchanged: main.cpp

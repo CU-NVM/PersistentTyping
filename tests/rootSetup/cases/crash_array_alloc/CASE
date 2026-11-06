@@ -1,0 +1,8 @@
+# Run 1 is killed inside the transaction that allocates the slot array,
+# after the allocation: recovery frees it, so the next run starts from an
+# empty pool (objs 1 after allocating) instead of finding a leaked array.
+crash: 1
+runs: 3
+out: objs {4n-3}
+out: last {n+3}
+out: objs 5

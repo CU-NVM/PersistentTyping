@@ -1,0 +1,7 @@
+# A pmem pointer to void or to a function has no persistent target. None of
+# these completes the type, so the library's static_asserts never fire.
+expect: fail
+error: main.cpp:3:1: 'persistent<void *>': a pmem pointer must have a pointee type, not void
+error: main.cpp:4:1: 'persistent<void (*)(int)>': function pointers cannot live in pmem
+error: main.cpp:5:1: 'persistent<const void *>': a pmem pointer must have a pointee type, not void
+unchanged: main.cpp

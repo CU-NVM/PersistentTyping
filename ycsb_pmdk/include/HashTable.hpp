@@ -1,0 +1,110 @@
+#include "HashNode.hpp"
+#include <iostream>
+#include <cstring>
+#include <vector>
+#include <libpmemobj++/pool.hpp>
+#include <libpmemobj++/utils.hpp>
+
+
+using namespace std;
+using pmem::obj::pool_base;
+using pmem::obj::pool_by_vptr;
+using pmem::obj::transaction;
+
+class HashTable{
+    persistent_ptr<persistent_ptr<HashNode>[]> table;
+    p<int> bucket_count;
+
+public:
+    HashTable(int buckets);
+    ~HashTable();
+    int hash(uint64_t key);
+    bool insert(uint64_t key, int payload_size);   // true if newly inserted
+    bool get(uint64_t key, int payload_size);      // read + touch payload; true if found
+    bool update(uint64_t key, int payload_size);   // in-place payload write; insert if absent
+};
+
+
+// Only called through make_persistent, i.e. inside a transaction.
+// make_persistent<T[]> value-initialises the buckets to nullptr.
+HashTable::HashTable(int buckets) {
+    bucket_count = buckets;
+    table = make_persistent<persistent_ptr<HashNode>[]>(bucket_count);
+}
+
+// Only called through delete_persistent, i.e. inside a transaction.
+HashTable::~HashTable() {
+    for(int i = 0; i < bucket_count; i++) {
+        persistent_ptr<HashNode> curr = table[i];
+        while(curr) {
+            persistent_ptr<HashNode> toDelete = curr;
+            curr = curr->next;
+            delete_persistent<HashNode>(toDelete);
+        }
+    }
+    delete_persistent<persistent_ptr<HashNode>[]>(table, bucket_count);
+}
+
+int HashTable::hash(uint64_t key) {
+    return key_hash(key) % bucket_count;   // djb2 or mix64, per --hash
+}
+
+// Insert a key with a fresh payload. Returns false if the key already exists.
+bool HashTable::insert(uint64_t key, int payload_size){
+    int idx = hash(key);
+    persistent_ptr<HashNode> curr = table[idx];
+    while(curr){
+        if(curr->key == key) return false;
+        curr = curr->next;
+    }
+    pool_base pop = pool_by_vptr(this);
+    transaction::run(pop, [&] {
+        persistent_ptr<HashNode> newNode = make_persistent<HashNode>(key, payload_size);
+        newNode->next = table[idx];
+        table[idx] = newNode;
+    });
+    return true;
+}
+
+// Read: walk the chain, and on a hit TOUCH every payload byte so the read
+// actually pulls the record's memory. Returns found.
+bool HashTable::get(uint64_t key, int payload_size){
+    int idx = hash(key);
+    persistent_ptr<HashNode> curr = table[idx];
+    while(curr){
+        if(curr->key == key){
+            const char* value = curr->value.get();
+            volatile char sink = 0;
+            for(int i = 0; i < payload_size; ++i) sink ^= value[i];
+            (void)sink;
+            return true;
+        }
+        curr = curr->next;
+    }
+    return false;
+}
+
+// Update: mutate the payload IN PLACE (no reallocation) so writes don't lean on
+// the slow allocator. If the key is absent, insert it.
+bool HashTable::update(uint64_t key, int payload_size){
+    int idx = hash(key);
+    persistent_ptr<HashNode> curr = table[idx];
+    while(curr){
+        if(curr->key == key){
+            pool_base pop = pool_by_vptr(this);
+            transaction::run(pop, [&] {
+                char* value = curr->value.get();
+                transaction::snapshot(value, payload_size);   // undo-log the whole payload once
+                unsigned char x = (unsigned char)(key & 0xFF);
+                for (int i = 0; i < payload_size; ++i) {
+                    x ^= (unsigned char)value[i];
+                    x = (unsigned char)((x << 1) | (x >> 7));   // rotate left by 1
+                    value[i] = (char)x;
+                }
+            });
+            return true;
+        }
+        curr = curr->next;
+    }
+    return insert(key, payload_size);
+}

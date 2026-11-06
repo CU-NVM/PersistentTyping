@@ -34,8 +34,11 @@ private:
     std::vector<std::string> workList;
     std::map<std::string, Spec> specs;
     void discoverTypesFromRoot();
+    clang::SourceLocation specInsertLoc(const clang::CXXRecordDecl* rd);
+    void markTransformed(clang::FileID fid, std::set<unsigned>& marked);
     std::string processClass(const std::string& name, const clang::CXXRecordDecl* decl);
     std::string processMethod(const clang::CXXMethodDecl* method);
+    void specializeSignatureTypes(const clang::CXXMethodDecl* method);
     std::string processConstructor(const clang::CXXConstructorDecl* ctor);
     std::string processInClassInit(const clang::FieldDecl* field);
     // Runs the body visitors (new T -> new persistent<T>, etc.) over `s`,

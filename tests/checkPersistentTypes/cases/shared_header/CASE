@@ -1,0 +1,6 @@
+# A header included by two TUs with legal spellings: both TUs pass and no
+# file is rewritten.
+flags: -Iinclude
+unchanged: include/types.hpp
+unchanged: a.cpp
+unchanged: b.cpp

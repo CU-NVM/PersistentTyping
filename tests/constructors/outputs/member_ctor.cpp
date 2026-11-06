@@ -1,3 +1,6 @@
+#ifndef PERSIST_TRANSFORMED
+#define PERSIST_TRANSFORMED
+#endif
 #include "member_ctor_pers_root.hpp"
 // member_ctor.cpp
 //
@@ -20,8 +23,10 @@ class persistent<Pt> {
 public:
     persistent<int> x;
     persistent<int> y;
-    static void* operator new(std::size_t sz) { return pmem_alloc(sz, alignof(Pt)); }
-    static void  operator delete(void* p)     { pmem_free(p); }
+    static void* operator new(std::size_t sz)   { return pmem_alloc(sz, alignof(Pt)); }
+    static void* operator new[](std::size_t sz) { return pmem_alloc(sz, alignof(Pt)); }
+    static void  operator delete(void* p)       { pmem_free(p); }
+    static void  operator delete[](void* p)     { pmem_free(p); }
     persistent(int x, int y) : x(x), y(y) {
         pmem::obj::transaction::run(pmem_pool(), [&]() {});
     }
@@ -41,8 +46,10 @@ class persistent<Range> {
 public:
     persistent<int> lo;
     persistent<int> hi;
-    static void* operator new(std::size_t sz) { return pmem_alloc(sz, alignof(Range)); }
-    static void  operator delete(void* p)     { pmem_free(p); }
+    static void* operator new(std::size_t sz)   { return pmem_alloc(sz, alignof(Range)); }
+    static void* operator new[](std::size_t sz) { return pmem_alloc(sz, alignof(Range)); }
+    static void  operator delete(void* p)       { pmem_free(p); }
+    static void  operator delete[](void* p)     { pmem_free(p); }
     persistent(int lo, int len) : lo(lo), hi(lo + len) {
         pmem::obj::transaction::run(pmem_pool(), [&]() {});
     }
@@ -68,8 +75,10 @@ public:
     persistent<Pt> pt;
     persistent<Range> r;
     persistent<int> id;
-    static void* operator new(std::size_t sz) { return pmem_alloc(sz, alignof(Widget)); }
-    static void  operator delete(void* p)     { pmem_free(p); }
+    static void* operator new(std::size_t sz)   { return pmem_alloc(sz, alignof(Widget)); }
+    static void* operator new[](std::size_t sz) { return pmem_alloc(sz, alignof(Widget)); }
+    static void  operator delete(void* p)       { pmem_free(p); }
+    static void  operator delete[](void* p)     { pmem_free(p); }
     persistent(int id) : pt(3, 4), r(id, 5), id(id) {
         pmem::obj::transaction::run(pmem_pool(), [&]() { harness::crash_point_ctor(); });
     }
@@ -103,8 +112,10 @@ class persistent<Holder> {
 public:
     pmem_ptr<persistent<Widget>> w{nullptr};
     persistent<int> runs = 0;
-    static void* operator new(std::size_t sz) { return pmem_alloc(sz, alignof(Holder)); }
-    static void  operator delete(void* p)     { pmem_free(p); }
+    static void* operator new(std::size_t sz)   { return pmem_alloc(sz, alignof(Holder)); }
+    static void* operator new[](std::size_t sz) { return pmem_alloc(sz, alignof(Holder)); }
+    static void  operator delete(void* p)       { pmem_free(p); }
+    static void  operator delete[](void* p)     { pmem_free(p); }
     void bump() {
         pmem::obj::transaction::run(pmem_pool(), [&]() { runs++; });
     }
@@ -112,7 +123,7 @@ public:
     bool has() const {
         bool __pers_ret = {};
         pmem::obj::transaction::run(pmem_pool(), [&]() {
-            __pers_ret = [&]() -> bool { return w.get() != nullptr; }();
+            __pers_ret = [&]() -> bool { return w != nullptr; }();
         });
         return __pers_ret;
     }
@@ -126,7 +137,7 @@ public:
     }
 
     void show() const {
-        pmem::obj::transaction::run(pmem_pool(), [&]() { w.get()->print(); });
+        pmem::obj::transaction::run(pmem_pool(), [&]() { w->print(); });
     }
 
 };
@@ -139,6 +150,6 @@ __pers_root* __pers_get_root() {
 
 int main(int argc, char** argv) {
     harness::init(argc, argv);
-    persistent<Holder>* h = pmem_get_or_create<persistent<Holder>>(__pers_get_root()->h);
-    return harness::drive(h);
+    pmem_get_or_create<persistent<Holder>>(__pers_get_root()->h);
+    return harness::drive(__pers_get_root()->h.get());
 }

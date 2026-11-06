@@ -1,0 +1,6 @@
+# A class nested in another: persistent<Outer::Inner> is emitted at global
+# scope after Outer, and before persistent<Outer>, which uses it.
+pass: all
+in main.cpp: pmem_ptr<persistent<Outer::Inner>> in;
+out: n {n} v {n+7}
+runs: 3

@@ -1,0 +1,3 @@
+# persistent<T> inside a template, with T a template parameter, cannot be
+# translated until T is known; it is left as written, without an error.
+unchanged: main.cpp

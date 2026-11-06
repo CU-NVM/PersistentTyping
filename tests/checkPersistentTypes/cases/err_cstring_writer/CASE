@@ -1,0 +1,5 @@
+# fill() takes char* and may write through it; those writes cannot be
+# logged, so passing it a C string in pmem is an error.
+pass: all
+expect: fail
+error: 'fill' may write to a C string in pmem through char*

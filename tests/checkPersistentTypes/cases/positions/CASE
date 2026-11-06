@@ -1,0 +1,11 @@
+# A written persistent<...> is checked wherever a type is spelled: `using`,
+# template arguments, parameters, return types, new, casts and sizeof.
+expect: fail
+error: main.cpp:4:14:
+error: main.cpp:6:1:
+error: main.cpp:6:22:
+error: main.cpp:9:26:
+error: main.cpp:10:30:
+erroronce: main.cpp:4:
+erroronce: main.cpp:9:
+unchanged: main.cpp

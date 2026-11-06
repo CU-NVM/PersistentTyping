@@ -1,0 +1,3 @@
+# Every legal spelling of a pmem pointer is accepted, whatever its spaces,
+# aliases or pmem_ptr, and check-persistent-types rewrites nothing.
+unchanged: main.cpp

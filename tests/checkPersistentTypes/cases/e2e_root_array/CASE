@@ -1,0 +1,11 @@
+# The motivating case end to end through --pass=all: a dynamic root array of
+# hash tables, `persistent<HashTable>** ht = new persistent<HashTable>*[n]`,
+# each table filled with get-or-create, each with a HashNode** bucket array.
+pass: all
+in main.cpp: if (!__pers_get_root()->ht) __pers_get_root()->ht = new pmem_ptr<persistent<HashTable>>[n];
+in main.cpp: pmem_get_or_create<persistent<HashTable>>(__pers_get_root()->ht[i], 4);
+in main_pers_root.hpp: pmem_ptr<pmem_ptr<persistent<HashTable>>> ht;
+in main.cpp: table = new pmem_ptr<persistent<HashNode>>[n];
+out: t0 size {n} walk {n}
+out: t1 size {n} walk {n}
+runs: 3

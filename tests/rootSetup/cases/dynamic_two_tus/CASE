@@ -1,0 +1,10 @@
+# A dynamic root array defined in a.cpp, declared in a header, allocated and
+# filled in main.cpp and used in both files.
+header: pmem_ptr<pmem_ptr<persistent<int>>> counters;
+in a.cpp: bump(__pers_get_root()->counters[i].get(), "a");
+in counters.hpp: /* root 'counters' is __pers_get_root()->counters */
+in a.cpp: /* root 'counters' is __pers_get_root()->counters */
+out: a {n}
+out: a {2n}
+out: main {2n+1}
+out: objs 3

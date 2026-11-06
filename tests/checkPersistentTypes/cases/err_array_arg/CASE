@@ -1,0 +1,3 @@
+expect: fail
+error: not persistent<T[N]>
+unchanged: main.cpp

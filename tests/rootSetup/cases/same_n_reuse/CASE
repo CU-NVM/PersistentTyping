@@ -1,0 +1,6 @@
+# The same n on every run reuses the slot array from run 1: it stays at the
+# offset recorded in run 1, and the object count (array, three counters, the
+# recorded offset) never grows, so nothing is reallocated or leaked.
+out: same 1
+out: objs 5
+runs: 3

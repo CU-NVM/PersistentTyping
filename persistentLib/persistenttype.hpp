@@ -9,7 +9,6 @@
 #include <iostream>
 #include <cassert>
 #include "pmem_allocator.hpp"
-#include "pmem_string.hpp"
 
 
 template<typename T>
@@ -67,8 +66,20 @@ bool operator!=(const PersistentAllocator<T1>&, const PersistentAllocator<T2>&) 
 template<typename T, template<typename> class Alloc = PersistentAllocator, typename E = void>
 class persistent;
 
+namespace persist_detail {
+    // false, but only once T is known, so a static_assert using it fires when
+    // the template is instantiated rather than when it is parsed.
+    template<typename T> inline constexpr bool always_false = false;
+
+    template<typename T> struct is_persistent : std::false_type {};
+    template<typename T, template<typename> class A, typename E>
+    struct is_persistent<persistent<T, A, E>> : std::true_type {};
+}
+
+// Arithmetic types and enums. Pointers have their own specialisation below,
+// and void / nullptr_t have none.
 template<typename T, template <typename> class Alloc>
-class persistent<T, Alloc, typename std::enable_if<std::is_fundamental<T>::value || std::is_pointer<T>::value>::type>{
+class persistent<T, Alloc, typename std::enable_if<std::is_arithmetic<T>::value || std::is_enum<T>::value>::type>{
 public:
     T contents;
     using allocator_type = Alloc<T>;
@@ -98,16 +109,6 @@ public:
     // must go through operator=, the compound-assignment operators, or ++/--.
     inline operator const T&() const {
         return contents;
-    }
-
-    inline T operator->() {
-        static_assert(std::is_pointer<T>::value, "operator-> is only valid for pointer types");
-        return load();
-    }
-
-    inline T operator->() const {
-        static_assert(std::is_pointer<T>::value, "operator-> is only valid for pointer types");
-        return load();
     }
 
     persistent& operator++()    { store(load() + 1); return *this; }          // ++x
@@ -147,16 +148,158 @@ public:
 };
 
 
+// A pointer that lives in pmem and points into pmem: persistent<U*>, spelled
+// pmem_ptr<U> in generated code. It stores the target's PMEMoid, never a raw
+// address, so it stays valid when the pool is mapped somewhere else on the
+// next run. One PMEMoid and nothing else, with no destructor, so an array of
+// them carries no array cookie.
+//
+// Reads go through the implicit conversion to U*, which is why `nd->next =
+// table[k]`, `if (p)`, `p == q` and `delete p` compile with no rewriting.
+// Writes go through operator=, which adds the slot to the transaction first.
+//
+// Rule 2: persistent<> marks only the layer it wraps, so the pointee must be
+// persistent<...> itself, before the tool runs as well as after. persistent<C*>
+// would be a pmem pointer to a DRAM C, which points at nothing after a restart.
+template<typename U, template <typename> class Alloc>
+class persistent<U*, Alloc, void> {
+    static_assert(!std::is_void<U>::value, "persistent<void*>: a pmem pointer must have a pointee type");
+    static_assert(!std::is_function<U>::value, "persistent<F*>: function pointers cannot live in pmem");
+    // void and function pointees already failed above; one message is enough.
+    static_assert(persist_detail::is_persistent<std::conditional_t<
+                      std::is_void<U>::value || std::is_function<U>::value,
+                      persistent<int>, std::remove_cv_t<U>>>::value,
+                  "persistent<T*>: a pmem pointer's target must be persistent<...> too; "
+                  "write persistent<persistent<T>*> (a pmem pointer to a pmem T)");
+
+    PMEMoid oid_;
+
+    // Only a slot that is itself in pmem needs logging; a copy on the DRAM
+    // stack does not.
+    void snapshot_if_pmem() {
+        if (pmem_contains(&oid_)) {
+            if (pmemobj_tx_add_range_direct(&oid_, sizeof(oid_)) != 0)
+                throw std::runtime_error("pmem_ptr assignment outside a transaction");
+        }
+    }
+
+    // A pmem pointer to DRAM must never exist. pmemobj_oid() returns OID_NULL
+    // for an address outside the pool, which would otherwise store a silent
+    // null.
+    static PMEMoid oid_of(U* raw) {
+        if (raw == nullptr) return OID_NULL;
+        PMEMoid oid = pmemobj_oid(raw);
+        if (OID_IS_NULL(oid))
+            throw std::runtime_error("pmem_ptr: target is not in the persistent pool");
+        return oid;
+    }
+
+public:
+    persistent() : oid_{OID_NULL} {}
+    persistent(std::nullptr_t) : oid_{OID_NULL} {}
+    persistent(U* raw) : oid_{oid_of(raw)} {}
+    persistent(const persistent&) = default;
+
+    U* get() const { return static_cast<U*>(pmemobj_direct(oid_)); }
+    operator U*() const { return get(); }
+    U& operator*() const { return *get(); }
+    U* operator->() const { return get(); }
+
+private:
+    // Writes `oid` into the slot, logged. Outside a transaction a slot in
+    // pmem gets one of its own, so a root slot assigned from main() (a root
+    // is its slot, see root-setup) is still atomic.
+    void set(PMEMoid oid) {
+        if (pmem_contains(&oid_) && pmemobj_tx_stage() != TX_STAGE_WORK) {
+            pmem::obj::transaction::run(pmem_pool(), [&] { set(oid); });
+            return;
+        }
+        snapshot_if_pmem();
+        oid_ = oid;
+    }
+
+public:
+    persistent& operator=(U* raw) {
+        set(oid_of(raw));
+        return *this;
+    }
+    persistent& operator=(const persistent& other) {
+        set(other.oid_);
+        return *this;
+    }
+
+    // A slot array (`new pmem_ptr<persistent<T>>[n]`) is itself allocated in pmem.
+    static void* operator new(std::size_t sz)   { return pmem_alloc(sz, alignof(PMEMoid)); }
+    static void* operator new[](std::size_t sz) { return pmem_alloc(sz, alignof(PMEMoid)); }
+    static void  operator delete(void* ptr)     { pmem_free(ptr); }
+    static void  operator delete[](void* ptr)   { pmem_free(ptr); }
+};
+
+template<typename X>
+using pmem_ptr = persistent<X*>;
+
+// A class C. Before the tool runs, persistent<C> inherits C so the user's
+// program compiles and the tool can parse it. In transformed code every
+// reachable C has a generated `template<> class persistent<C>`, so reaching
+// this definition means one was never generated and the object would silently
+// live in DRAM; PERSIST_TRANSFORMED turns that into a compile error.
 template<typename T, template <typename> class Alloc>
-class persistent<T, Alloc, typename std::enable_if<!std::is_fundamental<T>::value && !std::is_pointer<T>::value>::type>: public T{
+class persistent<T, Alloc, typename std::enable_if<std::is_class<T>::value>::type>
+#ifndef PERSIST_TRANSFORMED
+    : public T
+#endif
+{
+#ifdef PERSIST_TRANSFORMED
+    static_assert(persist_detail::always_false<T>,
+                  "persistent<C> was never specialised by persist-tool; C is not reachable from __pers_root");
+#else
 public:
     persistent() {}
 
     template<typename... Args>
     explicit persistent(Args&&... args) : T(std::forward<Args>(args)...) {}
-
-    /* These new and deleteoverloadings will only exist before clang tool transformation, pmem_alloc will be called from 
-    within the specialized template */
-
+#endif
 };
+
+// Every other T (references, unions, arrays, void, functions) has no
+// persistent form.
+template<typename T, template <typename> class Alloc, typename E>
+class persistent {
+    static_assert(persist_detail::always_false<T>,
+                  "persistent<T>: T must be an arithmetic type, an enum, a pointer or a class");
+};
+
+// A C string in pmem is an array of persistent<char> (P(char*) is
+// pmem_ptr<persistent<char>>), but the C library takes char*. persist-tool
+// wraps such an argument in one of these; users never write them.
+namespace persist_detail {
+    static_assert(sizeof(persistent<char>) == 1 && std::is_standard_layout<persistent<char>>::value,
+                  "persistent<char> must be laid out exactly like char");
+
+    // Read-only view, for strlen, strcmp, printf, `std::cout <<`, ...
+    inline const char* chars(const persistent<char>* p) {
+        return reinterpret_cast<const char*>(p);
+    }
+
+    // For a C function about to write `n` bytes at `p` (strcpy, memcpy, ...):
+    // adds them to the transaction first, as persistent<char>::store would.
+    inline char* writable(persistent<char>* p, std::size_t n) {
+        if (p && pmem_contains(p) && pmemobj_tx_add_range_direct(p, n) != 0)
+            throw std::runtime_error("write to a C string in pmem outside a transaction");
+        return reinterpret_cast<char*>(p);
+    }
+}
+
+// Returns *slot, creating it from `args` in one transaction if it is null.
+template<typename T, typename... Args>
+T* pmem_get_or_create(persistent<T*>& slot, Args&&... args) {
+    if (slot) return slot.get();
+
+    T* obj = nullptr;
+    pmem::obj::transaction::run(pmem_pool(), [&]{
+        obj = new T(std::forward<Args>(args)...);
+        slot = obj;
+    });
+    return obj;
+}
 #endif

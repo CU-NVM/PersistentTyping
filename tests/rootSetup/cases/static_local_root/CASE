@@ -1,0 +1,5 @@
+# A static local of a free function has a single copy for the program, so
+# it is a root too.
+header: c;
+in main.cpp: return __pers_get_root()->c.get();
+out: calls {n}

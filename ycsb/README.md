@@ -1,18 +1,17 @@
-# ycsb implementation for numatyping
-Uses zipfian key distribution from zipf_base files and HashTable as database.  
-Uses two threads with two HashTables, one is "local" and one is "remote" for each thread.   
-Simulates workloads A-F with num of ops, num of keys, theta, HashTable size and locality split decided at command line.  
+# ycsb, single-threaded, persistent with persist-clang-tool
+Single-threaded ycsb: one thread, `--tables` hash tables, no locks, no NUMA. The only persistence
+annotation in the user code is that the tables are `persistent<HashTable>` (see
+`src/ycsb_benchmark.cpp`). `../ycsb_pmdk` is the hand-written PMDK version it is compared against.
 
-
-compile:  
-```g++ ycsb_hashtable.cpp -o ycsb_hashtable```
-
-run:  
-```./ycsb_hashtable {workload (A,B,C,D,E, or F)} {operations} {keys} {theta} {buckets} {locality (80-20, 50-50, 20-80)}```
-
-example: 
-
+persistify (writes `../Output/ycsb/`, see `../persistify.py`):
 ```shell
-numactl --cpunodebind=0,1 --membind=0,1 ./bin/ycsb --th_config=numa --DS_config=numa -t 40 -b 1333 --w=D -u 120 -k 10000000 --l=80-20 -i 10 -a 1000
+../persistify.py ycsb
 ```
 
+compile + run the persistified copy:
+```shell
+../run.py ycsb -- -w A -u 20 -i 10 -k 1000000 -b 100000 -a 10 -p 64 -m uniform -H djb2 -W 2
+```
+The pool is reused across runs (`--fresh` deletes it). Build with clang++ (the Makefile does):
+under g++ the pool handle is reset after it is opened. On a regular (non-DAX) file add
+`PMEM_IS_PMEM_FORCE=1`, or every flush becomes an msync.

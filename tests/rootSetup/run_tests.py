@@ -43,6 +43,11 @@ CASE file directives (one per line, `#` lines describe the case):
     out: <line>                expected stdout line of every run, in order;
                                {n}, {n+K}, {An+B} use the run number n
     runs: N                    how many runs (default 2 when `out:` is given)
+    crash: N                   run N must be killed by SIGKILL (a simulated
+                               power cut); its output is not checked, and
+                               {n} counts only the runs that complete. Each run
+                               gets its number in PERSIST_RUN, so the program
+                               can pick where to die
     passes: N                  run root-setup N times in a row (default 1)
     xfail: <reason>            known gap: reports XFAIL / XPASS and does not
                                affect the exit status
@@ -87,7 +92,7 @@ class Spec:
         self.nologs, self.dumponce = [], []
         self.expect, self.errors, self.dumps, self.headers = "ok", [], [], []
         self.ins, self.notins, self.unchanged, self.out = [], [], [], []
-        self.runs, self.passes, self.xfail = None, 1, None
+        self.runs, self.passes, self.xfail, self.crashes = None, 1, None, set()
         for raw in path.read_text().splitlines():
             line = raw.strip()
             if not line:
@@ -112,6 +117,7 @@ class Spec:
             elif key == "unchanged": self.unchanged.append(val)
             elif key == "out":      self.out.append(val)
             elif key == "runs":     self.runs = int(val)
+            elif key == "crash":    self.crashes.add(int(val))
             elif key == "passes":   self.passes = int(val)
             elif key == "xfail":    self.xfail = val
             else:
@@ -223,11 +229,17 @@ def check(name, spec, lib, e2e=False):
 
     # runs
     pool = work / "pool"
-    env = dict(os.environ, PERSISTENT_POOL_PATH=str(pool))
     try:
+        done = 0
         for n in range(1, spec.runs + 1):
+            env = dict(os.environ, PERSISTENT_POOL_PATH=str(pool), PERSIST_RUN=str(n))
             code, rlog = run([binary], work, env)
-            want = [expand(l, n) for l in spec.out]
+            if n in spec.crashes:
+                if code != -9:
+                    raise CaseFailed("runs", f"run {n}: exit {code}, expected SIGKILL", rlog)
+                continue
+            done += 1
+            want = [expand(l, done) for l in spec.out]
             got = rlog.splitlines()
             if code != 0 or got != want:
                 raise CaseFailed("runs", f"run {n}: exit {code}, printed {got[:4]}, "

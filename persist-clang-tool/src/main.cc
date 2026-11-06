@@ -8,8 +8,10 @@
 #include <llvm/Support/Path.h>
 #include "llvm/Support/raw_ostream.h"
 #include "actions/recurseFrontendAction.h"
+#include "actions/checkPersistentTypesFrontendAction.h"
 #include "actions/rootSetupFrontendAction.h"
 #include "transformer/rootSetup.h"
+#include "utils/utils.h"
 // #include "actions/castFrontendAction.h"  // disabled: source not in build
 #include <set>
 #include <string>
@@ -21,10 +23,11 @@ using namespace clang;
 using namespace clang::tooling;
 
 // Ordered sequence for --pass=all
-static const llvm::StringRef AllPasses[] = {"root-setup", "recurse-persistent"};
+static const llvm::StringRef AllPasses[] = {"check-persistent-types", "root-setup", "recurse-persistent"};
 
-// Maps pass name to its frontend action factory. root-setup is not here: it
-// needs a table shared by every TU, see runRootSetup.
+// Maps pass name to its frontend action factory. check-persistent-types and
+// root-setup are not here: each needs a table shared by every TU, see
+// runCheckPersistentTypes and runRootSetup.
 static std::unique_ptr<FrontendActionFactory>
 makeFactoryForPass(llvm::StringRef Name) {
   return llvm::StringSwitch<std::unique_ptr<FrontendActionFactory>>(Name)
@@ -39,7 +42,8 @@ static void printUsage() {
         << "Takes the same arguments as clang++, e.g.\n"
         << "  persist-tool src/a.cpp src/b.cpp -Iinclude -std=c++20 -o prog\n\n"
         << "passes:\n"
-        << "  all (default)\n"
+        << "  all (default)   check-persistent-types, root-setup, recurse-persistent\n"
+        << "  check-persistent-types\n"
         << "  root-setup\n"
         << "  recurse-persistent\n\n"
         << "--dump-roots  print the roots root-setup finds across all files and stop;\n"
@@ -60,6 +64,18 @@ static int runRootSetup(const CompilationDatabase &Compilations,
         return 0;
     }
     return emitRoots(Table) ? 0 : 1;
+}
+
+// Checks the persistent<...> spellings of every TU, then reports the errors
+// once, so a mistake in a header shared by several TUs is reported once.
+static int runCheckPersistentTypes(const CompilationDatabase &Compilations,
+                                   const std::vector<std::string> &Files) {
+    CheckPersistentTypesTable Table;
+    CheckPersistentTypesActionFactory F(Table);
+    ClangTool Tool(Compilations, Files);
+    if (int ret = Tool.run(&F))
+        return ret;
+    return reportCheckPersistentTypes(Table) ? 0 : 1;
 }
 
 static bool isSourceFile(llvm::StringRef Path) {
@@ -135,10 +151,17 @@ int main(int argc, const char **argv) {
     // --dump-roots only looks, so later passes would see unchanged sources
     if (DumpRoots || PassName == "root-setup")
         return runRootSetup(Compilations, Files, DumpRoots);
+    if (PassName == "check-persistent-types")
+        return runCheckPersistentTypes(Compilations, Files);
 
     // Run all passes sequentially, stop on first failure
     if (PassName == "all") {
         for (llvm::StringRef Pass : AllPasses) {
+            if (Pass == "check-persistent-types") {
+                if (int ret = runCheckPersistentTypes(Compilations, Files))
+                    return ret;
+                continue;
+            }
             if (Pass == "root-setup") {
                 if (int ret = runRootSetup(Compilations, Files, false))
                     return ret;
@@ -148,6 +171,8 @@ int main(int argc, const char **argv) {
             auto F = makeFactoryForPass(Pass);
             if (int ret = Tool.run(F.get()))
                 return ret;
+            if (utils::errorCount())
+                return 1;
         }
         return 0;
     }
@@ -158,5 +183,7 @@ int main(int argc, const char **argv) {
         return 1;
     }
     ClangTool Tool(Compilations, Files);
-    return Tool.run(Factory.get());
+    if (int ret = Tool.run(Factory.get()))
+        return ret;
+    return utils::errorCount() ? 1 : 0;
 }

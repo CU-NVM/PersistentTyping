@@ -1,0 +1,6 @@
+# Orphan is only used through persistent<Orphan> in a function no root
+# reaches, so no persistent<Orphan> is generated. The program would put it
+# in DRAM; with PERSIST_TRANSFORMED the build stops instead.
+pass: all
+in main.cpp: #define PERSIST_TRANSFORMED
+compileerror: persistent<C> was never specialised by persist-tool

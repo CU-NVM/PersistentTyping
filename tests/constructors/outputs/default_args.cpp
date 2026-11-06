@@ -1,3 +1,6 @@
+#ifndef PERSIST_TRANSFORMED
+#define PERSIST_TRANSFORMED
+#endif
 #include "default_args_pers_root.hpp"
 // default_args.cpp
 //
@@ -24,8 +27,10 @@ class persistent<Widget> {
 public:
     persistent<int> a;
     persistent<int> b;
-    static void* operator new(std::size_t sz) { return pmem_alloc(sz, alignof(Widget)); }
-    static void  operator delete(void* p)     { pmem_free(p); }
+    static void* operator new(std::size_t sz)   { return pmem_alloc(sz, alignof(Widget)); }
+    static void* operator new[](std::size_t sz) { return pmem_alloc(sz, alignof(Widget)); }
+    static void  operator delete(void* p)       { pmem_free(p); }
+    static void  operator delete[](void* p)     { pmem_free(p); }
     persistent(int a = 7, int b = 9) : a(a), b(b) {
         pmem::obj::transaction::run(pmem_pool(), [&]() { harness::crash_point_ctor(); });
     }
@@ -77,8 +82,10 @@ public:
     pmem_ptr<persistent<Widget>> one{nullptr};
     pmem_ptr<persistent<Widget>> two{nullptr};
     persistent<int> runs = 0;
-    static void* operator new(std::size_t sz) { return pmem_alloc(sz, alignof(Holder)); }
-    static void  operator delete(void* p)     { pmem_free(p); }
+    static void* operator new(std::size_t sz)   { return pmem_alloc(sz, alignof(Holder)); }
+    static void* operator new[](std::size_t sz) { return pmem_alloc(sz, alignof(Holder)); }
+    static void  operator delete(void* p)       { pmem_free(p); }
+    static void  operator delete[](void* p)     { pmem_free(p); }
     void bump() {
         pmem::obj::transaction::run(pmem_pool(), [&]() { runs++; });
     }
@@ -86,7 +93,7 @@ public:
     bool has() const {
         bool __pers_ret = {};
         pmem::obj::transaction::run(pmem_pool(), [&]() {
-            __pers_ret = [&]() -> bool { return none.get() != nullptr; }();
+            __pers_ret = [&]() -> bool { return none != nullptr; }();
         });
         return __pers_ret;
     }
@@ -103,9 +110,9 @@ public:
 
     void show() const {
         pmem::obj::transaction::run(pmem_pool(), [&]() {
-        none.get()->print();
-        one.get()->print();
-        two.get()->print();
+        none->print();
+        one->print();
+        two->print();
     });
     }
 
@@ -119,6 +126,6 @@ __pers_root* __pers_get_root() {
 
 int main(int argc, char** argv) {
     harness::init(argc, argv);
-    persistent<Holder>* h = pmem_get_or_create<persistent<Holder>>(__pers_get_root()->h);
-    return harness::drive(h);
+    pmem_get_or_create<persistent<Holder>>(__pers_get_root()->h);
+    return harness::drive(__pers_get_root()->h.get());
 }

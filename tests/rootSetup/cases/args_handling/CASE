@@ -4,6 +4,6 @@ inputs: main.cpp
 toolargs: counter.hpp -include forced.cpp --
 nolog: on file: forced.cpp
 nolog: on file: counter.hpp
-unchanged: counter.hpp
+in counter.hpp: /* root 'counter' is __pers_get_root()->counter */
 unchanged: forced.cpp
 out: counter {n}

@@ -42,9 +42,10 @@ $(OUT)/harness.hpp: harness.hpp
 # The tool rewrites the file in place, so work on the copy.
 $(OUT)/%.cpp: %.cpp $(OUT)/harness.hpp $(TOOL)
 	cp $< $@
-	$(TOOL) --pass=root-setup $(abspath $@) -- $(TOOLARGS) > $(OUT)/$*.tool.log 2>&1
-	$(TOOL) --pass=recurse-persistent $(abspath $@) -- $(TOOLARGS) >> $(OUT)/$*.tool.log 2>&1
-	@! grep -q "error:" $(OUT)/$*.tool.log || { grep "error:" $(OUT)/$*.tool.log; rm -f $@; exit 1; }
+	@$(TOOL) --pass=root-setup $(abspath $@) -- $(TOOLARGS) > $(OUT)/$*.tool.log 2>&1 \
+	    && $(TOOL) --pass=recurse-persistent $(abspath $@) -- $(TOOLARGS) >> $(OUT)/$*.tool.log 2>&1 \
+	    && ! grep -q "error:" $(OUT)/$*.tool.log \
+	    || { grep "error:" $(OUT)/$*.tool.log; rm -f $@; exit 1; }
 
 $(OUT)/%: $(OUT)/%.cpp
 	$(CXX) $(CXXFLAGS) $< -o $@ $(LDLIBS) > $(OUT)/$*.build.log 2>&1 || { cat $(OUT)/$*.build.log; exit 1; }

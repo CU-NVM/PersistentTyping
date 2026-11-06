@@ -1,0 +1,4 @@
+# Running root-setup on its own output changes nothing: the roots are
+# already slots and __pers_get_root() is already defined.
+passes: 2
+out: counter {n}

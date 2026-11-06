@@ -16,6 +16,7 @@ RecursePersistentTyper::RecursePersistentTyper(clang::ASTContext &context,
 
 void RecursePersistentTyper::start() {
     llvm::outs() << "Starting RecursePersistentTyper\n";
+    unsigned errorsBefore = utils::errorCount();
 
     existingSpecs = utils::findExistingPersistentSpecs(context, printPolicy);
 
@@ -24,25 +25,36 @@ void RecursePersistentTyper::start() {
     while(!workList.empty()) {
         std::string name = workList.back();
         workList.pop_back();
-        const auto* rd = utils::findCXXRecordDeclByName(context, name);
+        const auto* rd = utils::findCXXRecordDeclByName(context, name, printPolicy);
         if(!rd){
-            llvm::outs() << " skipping " << name << " (not found)\n";
+            // Defined in another file of the program: its specialisation is
+            // generated in the TU that defines it. If no file does, the build
+            // stops at the library's "never specialised" check.
+            llvm::outs() << "note: " << name << " is not defined in this translation unit; "
+                            "persistent<" << name << "> is generated where it is defined\n";
             continue;
         }
         std::string text = processClass(name , rd);
         specs[name] = {rd, text};
     }
     auto& SM = context.getSourceManager();
+
+    // Insert in the order the classes end: two specs can land at the same
+    // place (after one namespace or enclosing class), and a spec must follow
+    // the specs of the classes it uses. A class can only use one that ends
+    // before it, a by-value field's class or a nested class, so ordering by
+    // end puts persistent<Outer::Inner> before persistent<Outer>.
+    std::vector<const Spec*> ordered;
+    for (const auto& [name, spec] : specs) ordered.push_back(&spec);
+    std::stable_sort(ordered.begin(), ordered.end(), [&](const Spec* a, const Spec* b) {
+        return SM.isBeforeInTranslationUnit(a->rd->getEndLoc(), b->rd->getEndLoc());
+    });
+
     std::set<unsigned> includeChecked;   // FileID hash values, dedupes per file
-    for (const auto& [name, spec] : specs) {
-        clang::SourceLocation afterBrace = spec.rd->getSourceRange().getEnd();
-        clang::SourceLocation insertLoc = afterBrace;
-        if (auto next = clang::Lexer::findNextToken(afterBrace, SM, context.getLangOpts())) {
-            if (next->is(clang::tok::semi)) {
-                insertLoc = next->getEndLoc();
-            }
-        }
-        rewriter.InsertTextAfterToken(insertLoc, "\n" + spec.text);
+    std::set<unsigned> marked;           // files given TRANSFORMED_DEFINE
+    for (const Spec* spec : ordered) {
+        clang::SourceLocation insertLoc = specInsertLoc(spec->rd);
+        rewriter.InsertTextAfterToken(insertLoc, "\n" + spec->text);
 
         // Ensure the file owning this spec pulls in the persistent library.
         clang::FileID fid = SM.getFileID(insertLoc);
@@ -51,11 +63,48 @@ void RecursePersistentTyper::start() {
                 rewriter.InsertText(SM.getLocForStartOfFile(fid),
                                     "#include \"persistenttype.hpp\"\n\n");
             }
+            markTransformed(fid, marked);
         }
     }
+    // This is the last pass, so the TU's own file is now fully transformed.
+    markTransformed(SM.getMainFileID(), marked);
 
+    // Like the other passes, write nothing rather than half a transformation.
+    if (utils::errorCount() != errorsBefore) {
+        llvm::errs() << "recurse-persistent: not writing "
+                     << SM.getFileEntryRefForID(SM.getMainFileID())->getName() << " because of the errors above\n";
+        return;
+    }
     utils::writeAllRewrites(rewriter, context);
 }  
+
+// C++ only allows `template<> class persistent<C>` at namespace scope of the
+// template, here the global one. So a spec goes right after the outermost
+// namespace or class enclosing C: after `namespace app { ... }` for
+// app::Node, after `struct Outer { ... };` for Outer::Inner.
+clang::SourceLocation RecursePersistentTyper::specInsertLoc(const clang::CXXRecordDecl* rd) {
+    const clang::Decl* top = rd;
+    for (const clang::DeclContext* dc = rd->getDeclContext(); !dc->isTranslationUnit();
+         dc = dc->getParent()) {
+        if (dc->isTransparentContext()) continue;   // extern "C++" { ... }
+        top = llvm::cast<clang::Decl>(dc);
+    }
+    auto& SM = context.getSourceManager();
+    clang::SourceLocation end = SM.getFileLoc(top->getSourceRange().getEnd());
+    if (llvm::isa<clang::RecordDecl>(top))
+        if (auto next = clang::Lexer::findNextToken(end, SM, context.getLangOpts()))
+            if (next->is(clang::tok::semi)) return next->getLocation();
+    return end;
+}
+
+// Puts utils::TRANSFORMED_DEFINE first in the file, once.
+void RecursePersistentTyper::markTransformed(clang::FileID fid, std::set<unsigned>& marked) {
+    if (!marked.insert(fid.getHashValue()).second) return;
+    auto& SM = context.getSourceManager();
+    if (utils::hasTransformedDefine(SM.getBufferData(fid))) return;
+    rewriter.InsertText(SM.getLocForStartOfFile(fid), utils::TRANSFORMED_DEFINE,
+                        /*InsertAfter=*/false);
+}
 
 void RecursePersistentTyper::specializeType(const std::string& typeName) {
     if(existingSpecs.count(typeName)) return;
@@ -75,16 +124,16 @@ void RecursePersistentTyper::discoverTypesFromRoot() {
         }
     }
     if(!root) {
-        llvm::errs() << "error: no __pers_root struct found in translation unit\n";
+        utils::reportError("no __pers_root struct found in translation unit; run root-setup first");
         return;
     }
     for(const auto* field : root->fields()) {
-        if (auto t = utils::unwrapPersistentType(field->getType(), printPolicy)) {
-            specializeType(*t);
-        } else {
-            llvm::outs() << " field " << field->getNameAsString() << " has non-persistent type "
-                         << field->getType().getAsString(printPolicy) << "\n";
+        utils::TypeTranslation tt = utils::translateType(field->getType(), printPolicy);
+        if (!tt.ok()) {
+            utils::reportError("root '" + field->getNameAsString() + "': " + tt.error);
+            continue;
         }
+        for (const std::string& name : tt.classes) specializeType(name);
     }
 }
 
@@ -110,19 +159,29 @@ std::string RecursePersistentTyper::processClass(const std::string& name,
 
     for(const auto* field : rd->fields()) {
         Bucket& b = bucketFor(field->getAccess());
-        std::string wrapped = utils::wrapFieldType(field->getType(), printPolicy, seen, workList);
-        b.fields += "    " + wrapped + " " + field->getNameAsString()
+        std::vector<std::string> reached;
+        b.fields += "    " + utils::wrapFieldType(field, printPolicy, reached)
                   + processInClassInit(field) + ";\n";
+        for (const std::string& c : reached) specializeType(c);
     }
 
      // Operator new/delete — always public.
-    pub.methods += "    static void* operator new(std::size_t sz) { return pmem_alloc(sz, alignof(" + name + ")); }\n";
-    pub.methods += "    static void  operator delete(void* p)     { pmem_free(p); }\n";
+    pub.methods += "    static void* operator new(std::size_t sz)   { return pmem_alloc(sz, alignof(" + name + ")); }\n";
+    pub.methods += "    static void* operator new[](std::size_t sz) { return pmem_alloc(sz, alignof(" + name + ")); }\n";
+    pub.methods += "    static void  operator delete(void* p)       { pmem_free(p); }\n";
+    pub.methods += "    static void  operator delete[](void* p)     { pmem_free(p); }\n";
 
                             
     for(const auto* method : rd->methods()) {
         if(method->isImplicit()) continue;
-        if(method->isOverloadedOperator()) continue; // TODO 
+        if(method->isOverloadedOperator()) {
+            // Dropping it would leave persistent<C> without the operator,
+            // and code using it would fail far from the cause.
+            utils::reportError(method->getLocation().printToString(context.getSourceManager())
+                               + ": " + name + "::" + method->getNameAsString()
+                               + ": overloaded operators are not supported in persistent classes yet");
+            continue;
+        }
         Bucket& b = bucketFor(method->getAccess());
         if(const auto* ctor = llvm::dyn_cast<clang::CXXConstructorDecl>(method))
             b.methods += "    " + processConstructor(ctor) + "\n";
@@ -167,14 +226,14 @@ std::string RecursePersistentTyper::processConstructor(const clang::CXXConstruct
     std::string initList;
     for(const auto* init : inits) {
         if(init->isBaseInitializer()) {
-            llvm::errs() << "error: base-class initializer in constructor of "
-                         << ctor->getParent()->getNameAsString()
-                         << " is not supported (no inheritance in persistent<T>)\n";
+            utils::reportError("base-class initializer in constructor of "
+                               + ctor->getParent()->getNameAsString()
+                               + " is not supported (no inheritance in persistent<T>)");
             continue;
         }
         if(init->isIndirectMemberInitializer()) {
-            llvm::errs() << "error: initializer of anonymous struct/union member in constructor of "
-                         << ctor->getParent()->getNameAsString() << " is not supported\n";
+            utils::reportError("initializer of anonymous struct/union member in constructor of "
+                               + ctor->getParent()->getNameAsString() + " is not supported");
             continue;
         }
         runRewriters(init->getInit(), scratch);
@@ -188,6 +247,7 @@ std::string RecursePersistentTyper::processConstructor(const clang::CXXConstruct
     runRewriters(def->getBody(), scratch);
     std::string body = scratch.getRewrittenText(def->getBody()->getSourceRange());
 
+    specializeSignatureTypes(ctor);
     std::string sig = utils::buildMethodSignature(ctor, printPolicy);
     if(!initList.empty()) sig += " : " + initList;
     return sig + " " + wrapInTransaction(body, ctor) + "\n";
@@ -195,10 +255,10 @@ std::string RecursePersistentTyper::processConstructor(const clang::CXXConstruct
 
 // A default member initializer (`int capacity = 16;`) is carried over to the
 // wrapped field; without it persistent<T>'s default constructor zeroes the
-// field. `= x` is kept only where the wrapper converts implicitly (persistent<F>
-// for fundamentals and non-class pointers, pmem_string): braces there would
-// reject narrowing like `int x = 3.5`. pmem_ptr<..> and persistent<Class> have
-// explicit constructors, so they get `{x}` instead. A by-value class built in
+// field. `= x` is kept where the wrapper converts implicitly (persistent<F>
+// for fundamentals, pmem_ptr<..> for pointers to fundamentals): braces there
+// would reject narrowing like `int x = 3.5`. A pointer to a class gets `{x}`,
+// and persistent<Class> has explicit constructors, so it does too. A by-value class built in
 // place (`Pt origin = Pt(4, 5);`) forwards its arguments, `origin{4, 5}`, since
 // persistent<Pt> mirrors Pt's constructors but cannot be built from a raw Pt.
 // Any other class-typed initializer (e.g. a call returning Pt) is left as
@@ -206,6 +266,15 @@ std::string RecursePersistentTyper::processConstructor(const clang::CXXConstruct
 std::string RecursePersistentTyper::processInClassInit(const clang::FieldDecl* field) {
     clang::Expr* init = field->getInClassInitializer();
     if(!init) return "";
+
+    if(llvm::isa<clang::StringLiteral>(init->IgnoreParenImpCasts())
+       && field->getType()->isPointerType()) {
+        utils::reportError(field->getLocation().printToString(context.getSourceManager())
+                           + ": field '" + field->getNameAsString() + "': a string literal is in "
+                             "DRAM, and a pointer in pmem cannot point at it; allocate with "
+                             "new char[n] and copy (strcpy) in the constructor");
+        return "";
+    }
 
     clang::Rewriter scratch(context.getSourceManager(), context.getLangOpts());
     runRewriters(init, scratch);
@@ -239,17 +308,27 @@ void RecursePersistentTyper::runRewriters(clang::Stmt* s, clang::Rewriter& scrat
     NewExprRewriter v1(printPolicy, this, scratch);
     v1.TraverseStmt(s);
 
-    LocalLHSRewriter v2(printPolicy, scratch);
+    LocalTypeRewriter v2(printPolicy, this, scratch);
     v2.TraverseStmt(s);
 
-    PmemPtrInterfaceRewriter v3(printPolicy, scratch);
+    CStringRewriter v3(context, scratch);
     v3.TraverseStmt(s);
+}
 
-    CStringIdiomRewriter v4(context, scratch);
-    v4.TraverseStmt(s);
+// A class a method takes or returns by pointer or reference is spelled
+// persistent<C> in the signature, so it needs a specialisation too.
+void RecursePersistentTyper::specializeSignatureTypes(const clang::CXXMethodDecl* method) {
+    std::vector<clang::QualType> types = {method->getReturnType()};
+    for (const auto* param : method->parameters()) types.push_back(param->getType());
+    for (clang::QualType t : types) {
+        utils::TypeTranslation tt = utils::translateDramRef(t, printPolicy);
+        if (!tt.ok()) continue;
+        for (const std::string& c : tt.classes) specializeType(c);
+    }
 }
 
 std::string RecursePersistentTyper::processMethod(const clang::CXXMethodDecl* method) {
+    specializeSignatureTypes(method);
     std::string sig = utils::buildMethodSignature(method, printPolicy);
 
     if(method->isDefaulted() && !method->doesThisDeclarationHaveABody())
@@ -293,7 +372,7 @@ std::string RecursePersistentTyper::wrapInTransaction(const std::string& bodyTex
         body = "{\n        pmem::obj::transaction::run(pmem_pool(), [&]() "
              + body + ");\n    }";
     } else {
-        std::string retType = method->getReturnType().getAsString(printPolicy);
+        std::string retType = utils::signatureType(method->getReturnType(), printPolicy);
         body = "{\n        " + retType + " __pers_ret = {};\n"
              + "        pmem::obj::transaction::run(pmem_pool(), [&]() {\n"
              + "            __pers_ret = [&]() -> " + retType + " " + body + "();\n"

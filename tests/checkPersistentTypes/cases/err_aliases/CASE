@@ -1,0 +1,12 @@
+# Users should not write aliases of persistent types, but if they do the check
+# still sees through them: it finds spellings by canonical type, so plain
+# `using` aliases (lines 7-8) and alias templates (lines 9-12) are checked like
+# the persistent<...> they name. Lines 8 and 12 are legal; the fix is always
+# spelled without aliases.
+expect: fail
+erroronce: main.cpp:7:1: 'persistent<NodePtr>' is a pmem pointer to a DRAM target
+erroronce: main.cpp:9:1: 'P<Node *>' is a pmem pointer to a DRAM target
+erroronce: main.cpp:10:1: 'Ptr<Node>' is a pmem pointer to a DRAM target
+erroronce: main.cpp:11:1: 'P<P<int>>' wraps one layer twice; write persistent<int>
+error: write persistent<persistent<Node>*>
+unchanged: main.cpp
