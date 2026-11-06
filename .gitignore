@@ -26,3 +26,8 @@ design.md
 # Python bytecode
 __pycache__/
 *.pyc
+
+# persistify.py stage copies and benchmark binaries
+persist-clang-tool/input/
+persist-clang-tool/out_*/
+ycsb_pmdk/bin/
