@@ -1,0 +1,12 @@
+# Static locals of main() are roots, like those of any function; plain
+# locals are not (see err_automatic_root). Covers init in the declaration, a
+# later assignment, and a nested block, which is not a DeclContext of its own.
+dump: [static-local]
+header: pmem_ptr<persistent<int>> a;
+header: pmem_ptr<persistent<long>> b;
+header: pmem_ptr<persistent<int>> inner;
+in main.cpp: pmem_get_or_create<persistent<int>>(__pers_get_root()->a, 10);
+in main.cpp: pmem_get_or_create<persistent<long>>(__pers_get_root()->b, 20);
+out: inner {n+30}
+out: a {n+10}
+out: b {n+20}

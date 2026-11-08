@@ -21,7 +21,7 @@ namespace {
         switch (l) {
             case RootLinkage::External:  return "external";
             case RootLinkage::Internal:  return "static";
-            case RootLinkage::MainLocal: return "main-local";
+            case RootLinkage::StaticLocal: return "static-local";
         }
         return "?";
     }
@@ -46,14 +46,13 @@ namespace {
 
     // The declaration as the user wrote it, for messages and --dump-roots.
     std::string declSpelling(const RootDeclRecord& d) {
-        std::string t = "persistent<" + d.typeName + ">";
-        if (!d.isPointer) return t;
+        std::string slot = "persistent<persistent<" + d.typeName + ">*>";
         switch (d.shape) {
-            case RootShape::Scalar:  return t + "*";
-            case RootShape::Fixed:   return t + "* [" + (d.arraySize ? std::to_string(d.arraySize) : "") + "]";
-            case RootShape::Dynamic: return t + "**";
+            case RootShape::Scalar:  return slot;
+            case RootShape::Fixed:   return slot + " [" + (d.arraySize ? std::to_string(d.arraySize) : "") + "]";
+            case RootShape::Dynamic: return "persistent<" + slot + "*>";
         }
-        return t;
+        return slot;
     }
 
     // The root's field in __pers_root.
@@ -96,10 +95,6 @@ std::vector<MergedRoot> RootTable::merge(std::vector<std::string>& errors) const
                 errors.push_back("root '" + key + "' is persistent<" + first.typeName + "> at "
                                  + first.location + " but persistent<" + d->typeName
                                  + "> at " + d->location);
-            else if (!d->isPointer)
-                errors.push_back("root '" + key + "' at " + d->location
-                                 + " is not a pointer; only persistent<T>* roots are supported,"
-                                   " and root arrays persistent<T>* r[N] and persistent<T>** r");
             else if (d->shape != def->shape
                      || (d->arraySize && def->arraySize && d->arraySize != def->arraySize))
                 errors.push_back("root '" + key + "' is " + declSpelling(*def) + " at "
@@ -138,10 +133,11 @@ void RootTable::print(llvm::raw_ostream& out) const {
             out << "  " << (d->isDefinition ? "definition " : "declaration")
                 << " " << declSpelling(*d) << "  at " << d->location << "\n";
 
-        static const char* kinds[] = {"init site", "array init site", "element init site"};
+        static const char* kinds[] = {"init site", "array init site"};
         for (const auto& [loc, s] : initSites) {
             if (s.rootKey != key) continue;
-            out << "  " << kinds[static_cast<int>(s.kind)] << " at " << s.location
+            out << "  " << kinds[static_cast<int>(s.kind)]
+                << (s.index.empty() ? "" : " [" + s.index + "]") << " at " << s.location
                 << "  (offset " << s.offset << ", length " << s.length << ")"
                 << (s.initArgs.empty() ? "" : "  args=`" + s.initArgs + "`") << "\n";
         }
@@ -163,94 +159,70 @@ namespace {
     using utils::locationOf;
 
     RootLinkage linkageOf(const clang::VarDecl* vd) {
-        if (vd->getDeclContext()->isFunctionOrMethod()) return RootLinkage::MainLocal;
+        if (vd->getDeclContext()->isFunctionOrMethod()) return RootLinkage::StaticLocal;
         if (vd->hasExternalFormalLinkage()) return RootLinkage::External;
         return RootLinkage::Internal;
     }
 
-    // The library's persistent<X>, or null.
-    const clang::ClassTemplateSpecializationDecl* asPersistent(clang::QualType t) {
-        const auto* ctsd = llvm::dyn_cast_or_null<clang::ClassTemplateSpecializationDecl>(
-            t->getAsCXXRecordDecl());
-        if (!ctsd || ctsd->getSpecializedTemplate()->getName() != "persistent") return nullptr;
-        if (!ctsd->getSpecializedTemplate()->getDeclContext()->getRedeclContext()->isTranslationUnit())
-            return nullptr;
-        return ctsd;
+    using utils::extractTargetFromPersistentType;
+
+    // True if `t` is a persistent<...> object, or an array of them: the only
+    // types a root can have.
+    bool isPersistentObject(clang::QualType t, const clang::ASTContext& ctx) {
+        return !extractTargetFromPersistentType(ctx.getBaseElementType(t)).isNull();
     }
 
-    struct RootType {
+    // For a pmem slot persistent<X*>, the X it points at; otherwise null.
+    clang::QualType slotTarget(clang::QualType t) {
+        clang::QualType x = extractTargetFromPersistentType(t);
+        if (x.isNull() || !x->isPointerType()) return {};
+        return x->getPointeeType().getCanonicalType();
+    }
+
+    struct RootInfo {
         RootShape shape = RootShape::Scalar;
-        unsigned arraySize = 0;
-        bool isPointer = true;
-        clang::QualType element;    // the T of persistent<T>
+        unsigned arraySize = 0;     // Fixed: N, or 0 for an extern `r[]`
+        clang::QualType element;    // the T whose objects the root holds
     };
 
-    // The shape of a root variable's type: persistent<T>*, persistent<T>* [N]
-    // or persistent<T>**, or persistent<T> by value (reported as an error).
-    // `persistent<persistent<T>*>* r` (= pmem_ptr<persistent<T>>* r) is a
-    // pointer to a slot, which is the dynamic array persistent<T>** too.
-    std::optional<RootType> rootTypeOf(clang::QualType qt, const clang::ASTContext& ctx) {
-        RootType rt;
+    // What a root of type `qt` holds, or nothing if root-setup does not
+    // support that type as a root:
+    //   persistent<persistent<T>*>               -> {Scalar,  element T}
+    //   persistent<persistent<T>*>[N]            -> {Fixed,   N, element T}
+    //   persistent<persistent<T>*>[]  (extern)   -> {Fixed,   0, element T}
+    //   persistent<persistent<persistent<T>*>*>  -> {Dynamic, element T}
+    //   persistent<int>, persistent<List>        -> nothing (by-value roots: not yet)
+    // T itself is never a pointer, so a slot of slots of slots is nothing too.
+    std::optional<RootInfo> buildRootInfo(clang::QualType qt, const clang::ASTContext& ctx) {
+        RootInfo root;
         clang::QualType t = qt.getCanonicalType();
         if (const clang::ArrayType* at = ctx.getAsArrayType(t)) {
-            rt.shape = RootShape::Fixed;
+            root.shape = RootShape::Fixed;
             if (const auto* cat = llvm::dyn_cast<clang::ConstantArrayType>(at))
-                rt.arraySize = cat->getSize().getZExtValue();
+                root.arraySize = cat->getSize().getZExtValue();
             else if (!llvm::isa<clang::IncompleteArrayType>(at))
                 return std::nullopt;
             t = at->getElementType().getCanonicalType();
         }
-        if (!t->isPointerType()) {
-            const auto* spec = rt.shape == RootShape::Scalar ? asPersistent(t) : nullptr;
-            if (!spec) return std::nullopt;
-            rt.isPointer = false;
-            rt.element = spec->getTemplateArgs()[0].getAsType();
-            return rt;
+        clang::QualType object = slotTarget(t);         // persistent<T>, or another slot
+        if (object.isNull()) return std::nullopt;
+        if (clang::QualType inner = slotTarget(object); !inner.isNull()) {
+            if (root.shape == RootShape::Fixed) return std::nullopt;
+            root.shape = RootShape::Dynamic;
+            object = inner;
         }
-        clang::QualType pointee = t->getPointeeType().getCanonicalType();
-        if (rt.shape == RootShape::Scalar && pointee->isPointerType()) {
-            rt.shape = RootShape::Dynamic;
-            pointee = pointee->getPointeeType().getCanonicalType();
-        } else if (rt.shape == RootShape::Scalar) {
-            if (const auto* slot = asPersistent(pointee)) {
-                clang::QualType arg = slot->getTemplateArgs()[0].getAsType().getCanonicalType();
-                if (arg->isPointerType()) {
-                    rt.shape = RootShape::Dynamic;
-                    pointee = arg->getPointeeType().getCanonicalType();
-                }
-            }
-        }
-        const auto* spec = asPersistent(pointee);
-        if (!spec) return std::nullopt;
-        rt.element = spec->getTemplateArgs()[0].getAsType();
-        if (rt.element.getCanonicalType()->isPointerType()) return std::nullopt;
-        return rt;
-    }
-
-    // True if `t` names the library's persistent<> anywhere: through
-    // pointers, references, arrays or template arguments.
-    bool mentionsPersistent(clang::QualType t, unsigned depth = 0) {
-        if (depth > 16) return false;
-        t = t.getCanonicalType();
-        if (t->isPointerType() || t->isReferenceType())
-            return mentionsPersistent(t->getPointeeType(), depth + 1);
-        if (t->isArrayType())
-            return mentionsPersistent(t->getAsArrayTypeUnsafe()->getElementType(), depth + 1);
-        if (asPersistent(t)) return true;
-        if (const auto* ctsd = llvm::dyn_cast_or_null<clang::ClassTemplateSpecializationDecl>(
-                t->getAsCXXRecordDecl()))
-            for (const clang::TemplateArgument& arg : ctsd->getTemplateArgs().asArray())
-                if (arg.getKind() == clang::TemplateArgument::Type
-                    && mentionsPersistent(arg.getAsType(), depth + 1))
-                    return true;
-        return false;
+        root.element = extractTargetFromPersistentType(object);
+        if (root.element.isNull() || root.element->isPointerType()) return std::nullopt;
+        return root;
     }
 
     // A root starts out null in a new pool, so `= nullptr`, `= 0` and `= {}`
     // need no init site.
     bool isNullInit(const clang::Expr* e, clang::ASTContext& ctx) {
-        e = e->IgnoreParenImpCasts();
+        e = e->IgnoreUnlessSpelledInSource();
         if (llvm::isa<clang::ImplicitValueInitExpr>(e)) return true;
+        // `persistent<persistent<T>*> r;` and `r[N];`: the slot's default constructor.
+        if (const auto* ce = llvm::dyn_cast<clang::CXXConstructExpr>(e)) return ce->getNumArgs() == 0;
         if (const auto* ile = llvm::dyn_cast<clang::InitListExpr>(e)) return ile->getNumInits() == 0;
         return e->isNullPointerConstant(ctx, clang::Expr::NPC_ValueDependentIsNotNull)
                != clang::Expr::NPCK_NotNull;
@@ -274,76 +246,65 @@ namespace {
         }
 
         bool VisitVarDecl(clang::VarDecl* vd) {
-            auto rt = rootOf(vd);
-            if (!rt) {
-                // Something persistent the program keeps in a variable that
-                // root-setup cannot make a slot of: say so instead of leaving
-                // it in DRAM.
-                if (isUserCandidate(vd) && mentionsPersistent(vd->getType())) {
-                    clang::SourceLocation loc = SM.getFileLoc(vd->getLocation());
-                    if (!SM.isInSystemHeader(loc))
-                        error(loc, "'" + vd->getNameAsString() + "' mentions persistent<> but is "
-                                   "not a root: a root is persistent<T>* r, persistent<T>* r[N] "
-                                   "or persistent<T>** r");
-                }
-                return true;
-            }
+            // Only a persistent<...> object, or an array of them, can be a root.
+            if (!isPersistentObject(vd->getType(), context)) return true;
             clang::SourceLocation loc = SM.getFileLoc(vd->getLocation());
             if (SM.isInSystemHeader(loc)) return true;
+            std::string name = vd->getNameAsString();
+            if (!utils::isRootCandidate(vd)) {
+                if (vd->isLocalVarDecl())
+                    error(loc, "'" + name + "' is a persistent object with automatic storage; "
+                               "add 'static' to make it a root, or declare it at file scope");
+                return true;
+            }
+            auto root = buildRootInfo(vd->getType(), context);
+            if (!root)
+                return error(loc, "root '" + name + "': only pmem pointer roots are supported "
+                                  "for now: persistent<persistent<T>*> r, persistent<persistent<T>*> "
+                                  "r[N] or persistent<persistent<persistent<T>*>*> r");
 
-            std::string typeName = rt->element.getAsString(printPolicy);
+            std::string typeName = root->element.getAsString(printPolicy);
             std::string where = locationOf(SM, loc);
-            RootDeclRecord d{typeName, vd->getNameAsString(), rt->shape, rt->arraySize,
-                             rt->isPointer, linkageOf(vd),
+            RootDeclRecord d{typeName, name, root->shape, root->arraySize, linkageOf(vd),
                              vd->isThisDeclarationADefinition() != clang::VarDecl::DeclarationOnly,
                              fileOf(SM, loc), where, 0, 0, ""};
             declarationRange(vd, d);
-            recordType(typeName, rt->element);
-            if (vd->hasInit() && d.error.empty() && rt->isPointer)
-                recordDeclInit(vd, *rt, d);
+            recordType(typeName, root->element);
+            if (vd->hasInit() && d.error.empty())
+                recordDeclInit(vd, *root, d);
             table.decls.emplace(where, d);
             return true;
         }
 
-        // `r = new persistent<T>(...)`, `r = new persistent<T>*[n]` and
-        // `r[i] = new persistent<T>(...)` outside the declaration.
-        bool VisitBinaryOperator(clang::BinaryOperator* bo) {
-            if (bo->getOpcode() != clang::BO_Assign) return true;
-            const auto* ne = llvm::dyn_cast<clang::CXXNewExpr>(bo->getRHS()->IgnoreParenImpCasts());
+        // `r = new persistent<T>(...)`, `r = new persistent<persistent<T>*>[n]`
+        // and `r[i] = new persistent<T>(...)` outside the declaration. A root
+        // is a slot, a class, so `=` is a call of its operator=.
+        bool VisitCXXOperatorCallExpr(clang::CXXOperatorCallExpr* op) {
+            if (op->getOperator() != clang::OO_Equal || op->getNumArgs() != 2) return true;
+            const auto* ne = llvm::dyn_cast<clang::CXXNewExpr>(op->getArg(1)->IgnoreUnlessSpelledInSource());
             if (!ne) return true;
-            const clang::Expr* lhs = bo->getLHS()->IgnoreParenImpCasts();
+            const clang::Expr* lhs = op->getArg(0)->IgnoreUnlessSpelledInSource();
             const clang::Expr* index = nullptr;
             if (const auto* ase = llvm::dyn_cast<clang::ArraySubscriptExpr>(lhs)) {
                 index = ase->getIdx();
-                lhs = ase->getBase()->IgnoreParenImpCasts();
+                lhs = ase->getBase()->IgnoreUnlessSpelledInSource();
             }
             const auto* dref = llvm::dyn_cast<clang::DeclRefExpr>(lhs);
             const auto* vd = dref ? llvm::dyn_cast<clang::VarDecl>(dref->getDecl()) : nullptr;
-            auto rt = rootOf(vd);
-            if (!rt || !rt->isPointer) return true;
-            clang::SourceLocation begin = SM.getFileLoc(bo->getBeginLoc());
+            if (!vd || !utils::isRootCandidate(vd)) return true;
+            auto root = buildRootInfo(vd->getType(), context);
+            if (!root) return true;
+            clang::SourceLocation begin = SM.getFileLoc(op->getBeginLoc());
             if (SM.isInSystemHeader(begin)) return true;
 
-            InitSiteRecord site = siteFor(vd, *rt, ne, bo->getSourceRange());
-            if (index) {
-                if (rt->shape == RootShape::Scalar || ne->isArray())
-                    return error(begin, "'" + vd->getNameAsString() + "[i] = new ...' needs a root array "
-                                        "and a single object");
-                site.kind = InitKind::Element;
-                site.index = textOf(index->getSourceRange());
-            } else if (rt->shape == RootShape::Fixed) {
-                return error(begin, "root array '" + vd->getNameAsString() + "' is initialised "
-                                    "element by element: " + vd->getNameAsString()
-                                    + "[i] = new persistent<T>(...)");
-            } else if ((rt->shape == RootShape::Dynamic) != ne->isArray()) {
-                return error(begin, rt->shape == RootShape::Dynamic
-                    ? "dynamic root array '" + vd->getNameAsString() + "' is allocated with "
-                      + vd->getNameAsString() + " = new persistent<T>*[n]"
-                    : "root '" + vd->getNameAsString() + "' holds one object, not an array");
-            } else if (rt->shape == RootShape::Dynamic && !isStatement(bo)) {
-                return error(begin, "write '" + vd->getNameAsString() + " = new ...[n];' as a "
-                                    "statement of its own");
-            }
+            // C++ itself rejects a `new` that does not fit the slot, now that a
+            // root is a slot. The rewrite of a `new[]` is a transaction::run(...)
+            // statement, so it cannot sit inside a larger expression.
+            if (ne->isArray() && !isStatement(op))
+                return error(begin, "write '" + textOf(op->getSourceRange())
+                                    + ";' as a statement of its own");
+            InitSiteRecord site = siteFor(vd, *root, ne, op->getSourceRange());
+            if (index) site.index = textOf(index->getSourceRange());
             table.initSites.emplace(site.location, site);
             return true;
         }
@@ -351,37 +312,19 @@ namespace {
         // Every other mention of a root becomes its slot; see UseRecord.
         bool VisitDeclRefExpr(clang::DeclRefExpr* dre) {
             const auto* vd = llvm::dyn_cast<clang::VarDecl>(dre->getDecl());
-            auto rt = rootOf(vd);
-            if (!rt || !rt->isPointer) return true;
+            if (!vd || !utils::isRootCandidate(vd) || !buildRootInfo(vd->getType(), context))
+                return true;
             clang::SourceLocation b = dre->getBeginLoc(), e = dre->getEndLoc();
             clang::SourceLocation fb = SM.getFileLoc(b);
             if (SM.isInSystemHeader(fb)) return true;
             std::string name = vd->getNameAsString();
             std::string key = RootTable::mergeKey(linkageOf(vd),
                                                   fileOf(SM, SM.getFileLoc(vd->getLocation())), name);
-            UseRecord u{key, fileOf(SM, fb), SM.getFileOffset(fb), 0, false, 0,
-                        locationOf(SM, fb), ""};
-            if (b.isMacroID() || e.isMacroID()) {
+            UseRecord u{key, fileOf(SM, fb), SM.getFileOffset(fb), 0, locationOf(SM, fb), ""};
+            if (b.isMacroID() || e.isMacroID())
                 u.error = "root '" + name + "' is used inside a macro, which cannot be rewritten";
-                table.uses.emplace(u.location, u);
-                return true;
-            }
-            u.length = SM.getFileOffset(endOf(e)) - u.offset;
-
-            const clang::Stmt* top = dre;
-            bool read = climb(top);
-            if (rt->shape == RootShape::Scalar) {
-                u.read = read;
-            } else {
-                const auto* ase = parentOf(top).get<clang::ArraySubscriptExpr>();
-                if (!ase || ase->getBase()->IgnoreParenImpCasts() != dre) {
-                    u.error = "root array '" + name + "' can only be used as " + name + "[i]";
-                } else {
-                    const clang::Stmt* elem = ase;
-                    if (climb(elem))
-                        u.elementEnd = SM.getFileOffset(endOf(ase->getEndLoc()));
-                }
-            }
+            else
+                u.length = SM.getFileOffset(endOf(e)) - u.offset;
             table.uses.emplace(u.location, u);
             return true;
         }
@@ -393,18 +336,6 @@ namespace {
         const clang::SourceManager& SM;
         std::set<unsigned> globalBegins;    // where each global root declaration starts
 
-        // A root candidate the user wrote: not a helper root-setup itself
-        // emitted on an earlier run (`__pers_init_<field>`).
-        bool isUserCandidate(const clang::VarDecl* vd) {
-            if (!vd || !utils::isRootCandidate(vd)) return false;
-            return !(vd->getDeclName().isIdentifier() && vd->getName().starts_with("__pers_"));
-        }
-
-        std::optional<RootType> rootOf(const clang::VarDecl* vd) {
-            if (!isUserCandidate(vd)) return std::nullopt;
-            return rootTypeOf(vd->getType(), context);
-        }
-
         bool error(clang::SourceLocation loc, const std::string& what) {
             table.errors[locationOf(SM, loc)] = what;
             return true;
@@ -413,24 +344,6 @@ namespace {
         clang::DynTypedNode parentOf(const clang::Stmt* s) {
             auto parents = context.getParents(*s);
             return parents.empty() ? clang::DynTypedNode() : parents[0];
-        }
-
-        // Walks up from `s` through parentheses and implicit casts, leaving
-        // `s` at the outermost one. True if a load (lvalue-to-rvalue
-        // conversion) was among them: the value is read, not written.
-        bool climb(const clang::Stmt*& s) {
-            bool read = false;
-            for (;;) {
-                clang::DynTypedNode p = parentOf(s);
-                if (const auto* ice = p.get<clang::ImplicitCastExpr>()) {
-                    read |= ice->getCastKind() == clang::CK_LValueToRValue;
-                    s = ice;
-                } else if (const auto* pe = p.get<clang::ParenExpr>()) {
-                    s = pe;
-                } else {
-                    return read;
-                }
-            }
         }
 
         bool isStatement(const clang::Expr* e) {
@@ -450,13 +363,13 @@ namespace {
                 SM, context.getLangOpts()).str();
         }
 
-        InitSiteRecord siteFor(const clang::VarDecl* vd, const RootType& rt,
+        InitSiteRecord siteFor(const clang::VarDecl* vd, const RootInfo& root,
                                const clang::CXXNewExpr* ne, clang::SourceRange range) {
             clang::SourceLocation begin = SM.getFileLoc(range.getBegin());
             unsigned offset = SM.getFileOffset(begin);
             InitSiteRecord site;
             site.kind = ne->isArray() ? InitKind::Array : InitKind::Object;
-            site.typeName = rt.element.getAsString(printPolicy);
+            site.typeName = root.element.getAsString(printPolicy);
             site.varName = vd->getNameAsString();
             site.rootKey = RootTable::mergeKey(linkageOf(vd),
                                                fileOf(SM, SM.getFileLoc(vd->getLocation())),
@@ -465,8 +378,7 @@ namespace {
             site.offset = offset;
             site.length = SM.getFileOffset(endOf(range.getEnd())) - offset;
             site.initArgs = utils::extractInitArgs(ne, context);
-            if (ne->isArray() && ne->getArraySize())
-                site.count = textOf((*ne->getArraySize())->getSourceRange());
+            if (ne->isArray()) site.newText = textOf(ne->getSourceRange());
             site.inDeclaration = false;
             site.atFileScope = false;
             site.location = locationOf(SM, begin);
@@ -500,29 +412,18 @@ namespace {
             d.length = SM.getFileOffset(e) - d.offset;
         }
 
-        // `persistent<T>* r = new persistent<T>(...);` and the like: the init
-        // site replaces the whole declaration.
-        void recordDeclInit(const clang::VarDecl* vd, const RootType& rt, RootDeclRecord& d) {
+        // `persistent<persistent<T>*> r = new persistent<T>(...);` and the
+        // like: the init site replaces the whole declaration.
+        void recordDeclInit(const clang::VarDecl* vd, const RootInfo& root, RootDeclRecord& d) {
             const clang::Expr* init = vd->getInit();
-            const auto* ne = llvm::dyn_cast<clang::CXXNewExpr>(init->IgnoreParenImpCasts());
+            const auto* ne = llvm::dyn_cast<clang::CXXNewExpr>(init->IgnoreUnlessSpelledInSource());
             if (!ne) {
                 if (!isNullInit(init, context))
                     d.error = "root '" + d.varName + "' can only be initialised with "
                               "new persistent<T>(...)";
                 return;
             }
-            if (rt.shape == RootShape::Fixed) {
-                d.error = "root array '" + d.varName + "' is initialised element by element: "
-                          + d.varName + "[i] = new persistent<T>(...)";
-                return;
-            }
-            if ((rt.shape == RootShape::Dynamic) != ne->isArray()) {
-                d.error = rt.shape == RootShape::Dynamic
-                    ? "dynamic root array '" + d.varName + "' is allocated with new persistent<T>*[n]"
-                    : "root '" + d.varName + "' holds one object, not an array";
-                return;
-            }
-            InitSiteRecord site = siteFor(vd, rt, ne, vd->getSourceRange());
+            InitSiteRecord site = siteFor(vd, root, ne, vd->getSourceRange());
             site.offset = d.offset;
             site.length = d.length;
             site.inDeclaration = true;
@@ -648,23 +549,33 @@ namespace {
 }
 
 namespace {
-    // The text an init site becomes. `slot` is __pers_get_root()->field.
+    // The text any other use of a root becomes: its slot in __pers_root, which
+    // has the same type as the variable it replaces, so nothing else changes.
+    std::string useSiteText(const std::string& field) {
+        return "__pers_get_root()->" + field;
+    }
+
+    // The note a root's declaration leaves behind, as option (b) removes it.
+    std::string declSiteComment(const RootDeclRecord& d, const std::string& field) {
+        return "/* root '" + d.varName + "' is " + useSiteText(field) + " */";
+    }
+
+    // The text an init site becomes.
     std::string initSiteText(const InitSiteRecord& site, const std::string& field) {
         std::string elem = "persistent<" + site.typeName + ">";
-        std::string slot = "__pers_get_root()->" + field;
+        std::string slot = useSiteText(field);
+        if (!site.index.empty()) slot += "[" + site.index + "]";
         std::string args = site.initArgs.empty() ? "" : ", " + site.initArgs;
         if (site.kind == InitKind::Array) {
             // Allocate only if the slot is still null, so a later run reuses
             // the array; in one transaction, so a crash leaves no array behind.
-            std::string body = "if (!" + slot + ") " + slot + " = new pmem_ptr<" + elem + ">["
-                             + site.count + "]; ";
+            std::string body = "if (!" + slot + ") " + slot + " = " + site.newText + "; ";
             if (site.atFileScope)
                 return "[[maybe_unused]] static const bool __pers_init_" + field
                      + " = (pmem::obj::transaction::run(pmem_pool(), [] { " + body + "}), true);";
             std::string tx = "pmem::obj::transaction::run(pmem_pool(), [&] { " + body + "})";
             return site.inDeclaration ? tx + ";" : tx;
         }
-        if (site.kind == InitKind::Element) slot += "[" + site.index + "]";
         std::string call = "pmem_get_or_create<" + elem + ">(" + slot + args + ")";
         if (!site.inDeclaration) return call;
         // A global initialiser still has to run before main(), so it stays a
@@ -731,9 +642,7 @@ bool emitRoots(const RootTable& table) {
     for (const auto& [loc, d] : table.decls) {
         auto field = fieldFor.find(RootTable::mergeKey(d));
         if (field == fieldFor.end() || declsWithInit.count({d.file, d.offset})) continue;
-        edits[d.file].push_back({d.offset, d.length,
-                                 "/* root '" + d.varName + "' is __pers_get_root()->"
-                                 + field->second + " */"});
+        edits[d.file].push_back({d.offset, d.length, declSiteComment(d, field->second)});
         replaced[d.file].push_back({d.offset, d.offset + d.length});
     }
 
@@ -745,9 +654,7 @@ bool emitRoots(const RootTable& table) {
         }
         auto field = fieldFor.find(u.rootKey);
         if (field == fieldFor.end()) continue;  // a declaration-only root: reported by merge
-        std::string slot = "__pers_get_root()->" + field->second;
-        edits[u.file].push_back({u.offset, u.length, u.read ? slot + ".get()" : slot});
-        if (u.elementEnd) edits[u.file].push_back({u.elementEnd, 0, ".get()"});
+        edits[u.file].push_back({u.offset, u.length, useSiteText(field->second)});
     }
 
     if (!errors.empty()) {

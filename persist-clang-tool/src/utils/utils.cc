@@ -86,16 +86,32 @@ findCXXRecordDeclByName(clang::ASTContext& context, const std::string& name,
 }
 
 bool isRootCandidate(const clang::VarDecl* vd) {
-    if (llvm::isa<clang::ParmVarDecl>(vd)) return false;
-    const clang::DeclContext* dc = vd->getDeclContext();
-    // Global, namespace-scope (anonymous namespaces included): one copy.
-    if (dc->getRedeclContext()->isFileContext()) return true;
-    // A static local has one copy for the whole program too.
-    if (vd->isStaticLocal()) return true;
-    if (auto* fd = llvm::dyn_cast<clang::FunctionDecl>(dc)) {
-        if (fd->isMain()) return true;
+    // One copy for the whole program: globals, namespace-scope variables and
+    // static locals. Static data members also have static storage, but a
+    // root inside a class is an error (closure doc 6.5), not a root.
+    return vd->getStorageDuration() == clang::SD_Static && !vd->isStaticDataMember();
+}
+
+namespace {
+    // The library's persistent class template, as opposed to a user template
+    // that happens to share its name.
+    bool isPersistentTypeTemplate(const clang::TemplateDecl* td) {
+        return td && td->getName() == "persistent"
+            && td->getDeclContext()->getRedeclContext()->isTranslationUnit();
     }
-    return false;
+}
+
+const clang::ClassTemplateSpecializationDecl* persistentSpecialization(clang::QualType t) {
+    const auto* ctsd = llvm::dyn_cast_or_null<clang::ClassTemplateSpecializationDecl>(
+        t.getCanonicalType()->getAsCXXRecordDecl());
+    if (!ctsd || !isPersistentTypeTemplate(ctsd->getSpecializedTemplate())) return nullptr;
+    return ctsd;
+}
+
+clang::QualType extractTargetFromPersistentType(clang::QualType t) {
+    const auto* ctsd = persistentSpecialization(t);
+    if (!ctsd) return {};
+    return ctsd->getTemplateArgs()[0].getAsType().getCanonicalType();
 }
 
 std::string extractInitArgs(const clang::CXXNewExpr* newExpr,
@@ -132,20 +148,6 @@ namespace {
         p.SuppressTagKeyword = true;
         p.SuppressUnwrittenScope = true;
         return p;
-    }
-
-    // The library's own `persistent` template, as opposed to a user class
-    // template that happens to share the name inside some namespace.
-    const clang::ClassTemplateSpecializationDecl*
-    asPersistentSpec(const clang::CXXRecordDecl* rd) {
-        const auto* ctsd = llvm::dyn_cast<clang::ClassTemplateSpecializationDecl>(rd);
-        if (!ctsd) return nullptr;
-        const clang::ClassTemplateDecl* tmpl = ctsd->getSpecializedTemplate();
-        if (tmpl->getName() != "persistent") return nullptr;
-        if (!tmpl->getDeclContext()->getRedeclContext()->isTranslationUnit()) return nullptr;
-        if (ctsd->getTemplateArgs().size() == 0
-            || ctsd->getTemplateArgs()[0].getKind() != clang::TemplateArgument::Type) return nullptr;
-        return ctsd;
     }
 
     // One run of P over a type. Each step works on the canonical type, so
@@ -234,8 +236,8 @@ namespace {
                       std::string& prefix, std::string& suffix) {
             if (rd->isUnion())
                 return fail(t, "unions cannot live in pmem");
-            if (const auto* spec = asPersistentSpec(rd))
-                return run(spec->getTemplateArgs()[0].getAsType(), prefix, suffix);
+            if (clang::QualType x = extractTargetFromPersistentType(t); !x.isNull())
+                return run(x, prefix, suffix);
             const clang::SourceManager& SM = rd->getASTContext().getSourceManager();
             if (rd->isInStdNamespace() || SM.isInSystemHeader(rd->getLocation()))
                 return fail(t, "library types cannot live in pmem");

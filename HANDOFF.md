@@ -21,6 +21,23 @@ All three PDFs are available in the project root for re-reading.
 
 ## What's been done so far
 
+**Rule 1/3 of the P(T) closure: a root is a static-storage persistent<...> object (2026-11-08, branch `root-setup`)**
+
+To-do #4 of the closure document. The user now writes the slot type (`persistent<persistent<T>*> r;`, `r[N]`, `persistent<persistent<persistent<T>*>*> r`), which moves into `__pers_root` unchanged. `persistent<T>*` / `[N]` / `**` are DRAM variables and are left alone.
+- **`utils`.** `isRootCandidate` is now "static storage, not a static data member". It no longer accepts plain `main` locals (or `thread_local`s). `persistentSpecialization` and `extractTargetFromPersistentType` are shared by every pass, replacing three private copies.
+- **root-setup.**
+  - `rootTypeOf` is now `buildRootInfo`, with an input → output comment.
+  - `VisitVarDecl` asks first whether the variable is a persistent object, then whether it is a candidate, then builds the info.
+  - New errors: a persistent object in an automatic local ("add 'static'"), and unsupported root shapes (by-value roots wait for #6).
+  - `mentionsPersistent` and its "a root is persistent<T>*" error are gone.
+  - Init sites are matched as `operator=` calls (`CXXOperatorCallExpr`), using `IgnoreUnlessSpelledInSource()`.
+  - Uses become `__pers_get_root()->r` with no `.get()`, because the slot has the same type as the variable. The read/write split, `climb()` and the "array root only as `r[i]`" rule are gone.
+  - `RootLinkage::MainLocal` is now `StaticLocal`.
+- **Library.** Before the transform, the generic `persistent<C>` has pool `operator new`/`delete`, so `new persistent<C>` allocates in the pool before and after the transform.
+- **Tests.** rootSetup is respelled (41/41, `--e2e` too). Renamed: `main_local` → `main_static_local`, `err_not_a_root` → `err_unsupported_root`, `err_not_pointer` → `err_by_value_root`, and `err_root_array_use` → `root_array_decay` (now a passing case). New: `err_automatic_root`. `rt.hpp` gains a slot overload of `bump`. Deleted as old-design: `tests/constructors`, `tests/pointers`, and the `e2e_*`, `err_cstring_writer`, `err_operator` and `err_string_literal` cases of checkPersistentTypes. New end-to-end tests are to be written per closure rule.
+- **Results.** lib 17/17, checkPersistentTypes 12/12, rootSetup 41/41, translate-type-test 86/86.
+- **Not yet done:** respelling the `persistify.py` benchmarks (#19); get-or-create at the top of `main` and by-value roots (#6); qualified keys (#7). Static locals with the same name in two functions of one file still share a key.
+
 **Rule 2 of the P(T) closure: `persistent<T*>` needs a persistent pointee (2026-11-06, branch `pointers-arrays`)**
 
 First item of the closure document's to-do list (#3, prepared for the 5 Nov advisor meeting). `persistent<Node*>` is now an error instead of being normalised to `persistent<persistent<Node>*>`.
@@ -33,7 +50,7 @@ First item of the closure document's to-do list (#3, prepared for the 5 Nov advi
 - **Aliases of persistent types are discouraged but handled.** Users should write `persistent<...>` directly, with no `using PNode = persistent<Node>`. If they do use one, the pass still works: it *finds* spellings by canonical type (`persistentSpecialization`), not by template name. That way `template<class T> using P = persistent<T>; P<Node*>* x;` is checked too; before this fix it slipped through. Test: `err_aliases`.
 - **Removed from the pass, to keep it simple:** the rewriting itself, the macro check, and the reporting of `translateType` failures (references, unions, `std::` types, class templates, inheritance, virtual methods). The library's `static_assert`s and the later passes still catch most of these. The `err_library`, `err_reference` and `err_macro` cases are deleted. They were untracked, so they are gone.
 - **Tests.** `tests/lib` gains a `// untransformed` marker for `compile_fail` cases. In `tests/checkPersistentTypes` (was `tests/normalize`), `spellings`, `shared_header` and `positions` check that legal spellings pass unchanged and that every position is checked. `err_raw_pointee`, `err_raw_pointee_object`, `err_double_wrap`, `err_void_function_pointer` and `err_aliases` are new. `err_shared_once` uses a Rule-2 mistake, and `e2e_hashtable` no longer double-wraps its root. The orphaned `tests/persistent_test.cpp` (already broken at HEAD, and testing by-value stack `persistent<>` that R2 forbids) is deleted.
-- **Results.** lib 17/17, checkPersistentTypes 19/19, rootSetup 40/40, constructors 14 (only `base_init` XFAIL), pointers 4/4.
+- **Results.** lib 17/17, checkPersistentTypes 19/19, rootSetup 40/40, constructors 14 (only `base_init` XFAIL), pointers 4/4. *(constructors and pointers deleted 2026-11-08.)*
 - **Next on the closure to-do list:** #4, where only static-storage `persistent<...>` objects are roots and `persistent<T>*` globals and `main` locals stay in DRAM. That reworks `rootTypeOf`/`RootShape` in root-setup.
 - **Follow-up:** design.md is stale beyond Rule 2 (`pmem_string`, the pass list) and should be brought in line with the closure document.
 

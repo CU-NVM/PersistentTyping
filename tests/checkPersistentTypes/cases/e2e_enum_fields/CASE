@@ -1,7 +1,0 @@
-# Enum fields, plain and scoped, are persistent<E> like any other scalar:
-# their writes are logged and they keep their values across runs.
-pass: all
-in main.cpp: persistent<Color> color;
-in main.cpp: persistent<Mode> mode;
-out: flips {n} color {n%2} on {n%2}
-runs: 3

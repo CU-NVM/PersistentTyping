@@ -1,6 +1,6 @@
 #include "rt.hpp"
 
-namespace app { persistent<int>* hits; }
+namespace app { persistent<persistent<int>*> hits; }
 
 int main() {
     app::hits = new persistent<int>(0);

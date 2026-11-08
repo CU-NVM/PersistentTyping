@@ -1,0 +1,4 @@
+# A persistent object held by value, persistent<int> r, is a root in the
+# design but not supported yet; persistent<persistent<int>*> next to it is.
+expect: fail
+error: root 'value': only pmem pointer roots are supported

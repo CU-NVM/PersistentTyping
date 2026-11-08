@@ -1,5 +1,5 @@
 #include "persistenttype.hpp"
 
-persistent<int>* x;
+persistent<persistent<int>*> x;
 
 void init() { x = new persistent<int>(1); }

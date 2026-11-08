@@ -1,11 +1,11 @@
 # A header with an extern root is seen by four TUs but recorded once: records
 # are keyed by file:line:col, not per TU.
 dump: == roots: 1 ==
-dumponce: declaration persistent<int>*
-in a.cpp: bump(__pers_get_root()->shared.get(), "a");
-in b.cpp: bump(__pers_get_root()->shared.get(), "b");
+dumponce: declaration persistent<persistent<int>*>
+in a.cpp: bump(__pers_get_root()->shared, "a");
+in b.cpp: bump(__pers_get_root()->shared, "b");
 in c.cpp: /* root 'shared' is __pers_get_root()->shared */
-notin roots.hpp: extern persistent<int>* shared;
+notin roots.hpp: extern persistent<persistent<int>*> shared;
 out: a {3n-2}
 out: b {3n-1}
 out: main {3n}

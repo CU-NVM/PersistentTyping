@@ -1,10 +1,10 @@
 #include "rt.hpp"
 
-persistent<int>** counters;
+persistent<persistent<persistent<int>*>*> counters;
 
 int main() {
     pmem::obj::transaction::run(pmem_pool(), [&] {
-        counters = new persistent<int>*[4];
+        counters = new persistent<persistent<int>*>[4];
         crash_on_run(1);
     });
     std::cout << "objs " << object_count() << "\n";

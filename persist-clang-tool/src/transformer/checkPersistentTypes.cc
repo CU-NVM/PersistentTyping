@@ -7,29 +7,8 @@
 #include <llvm/Support/raw_ostream.h>
 
 namespace {
-    // The library's persistent class template, as opposed to a user template
-    // that happens to share its name.
-    bool isPersistentTypeTemplate(const clang::TemplateDecl* td) {
-        return td && td->getName() == "persistent"
-            && td->getDeclContext()->getRedeclContext()->isTranslationUnit();
-    }
-
-    // The library's persistent<T> that `t` names, or null. Works on the
-    // canonical type, so spaces, typedefs, `using` aliases, alias templates
-    // and pmem_ptr<U> (which is persistent<U*>) all give the same answer.
-    const clang::ClassTemplateSpecializationDecl* persistentSpecialization(clang::QualType t) {
-        const auto* ctsd = llvm::dyn_cast_or_null<clang::ClassTemplateSpecializationDecl>(
-            t.getCanonicalType()->getAsCXXRecordDecl());
-        if (!ctsd || !isPersistentTypeTemplate(ctsd->getSpecializedTemplate())) return nullptr;
-        return ctsd;
-    }
-
-    // The T of the library's persistent<T>, or a null type if `t` is not one.
-    clang::QualType extractTargetFromPersistentType(clang::QualType t) {
-        const auto* ctsd = persistentSpecialization(t);
-        if (!ctsd) return {};
-        return ctsd->getTemplateArgs()[0].getAsType().getCanonicalType();
-    }
+    using utils::extractTargetFromPersistentType;
+    using utils::persistentSpecialization;
 
     // Why the persistent<...> type `t` is not allowed, or "" if it is. Walks
     // every pmem layer, so persistent<persistent<Node*>*> is caught at the

@@ -1,9 +1,0 @@
-# A root passed to a free function as persistent<HashTable>*: the result
-# compiles with PERSIST_TRANSFORMED and keeps its data across runs.
-pass: all
-in main.cpp: pmem_get_or_create<persistent<HashTable>>(__pers_get_root()->ht, 4);
-in main.cpp: std::cout << "size " << __pers_get_root()->ht.get()->size
-in main.cpp: int total(persistent<HashTable>* t)
-in main.cpp: #define PERSIST_TRANSFORMED
-out: size {n} walk {n}
-runs: 3

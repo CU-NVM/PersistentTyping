@@ -1,0 +1,5 @@
+# A persistent object at static storage is a root, so one whose shape
+# root-setup does not support is an error, not silently left in DRAM. A DRAM
+# global that holds pmem pointers (`list`) is fine.
+expect: fail
+error: root 'deep': only pmem pointer roots are supported

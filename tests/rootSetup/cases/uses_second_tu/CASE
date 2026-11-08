@@ -1,7 +1,7 @@
 # A fixed root array defined in main.cpp and declared `extern ... slots[];`,
 # without a size, in a header; b.cpp only uses it, and its uses are rewritten.
 header: pmem_ptr<persistent<int>> slots[2];
-in b.cpp: bump(__pers_get_root()->slots[1].get(), "b");
+in b.cpp: bump(__pers_get_root()->slots[1], "b");
 in b.cpp: #include "main_pers_root.hpp"
 out: b {n+5}
 out: main {n}

@@ -1,6 +1,6 @@
 #include "rt.hpp"
 
-persistent<int>* hits;   // external
+persistent<persistent<int>*> hits;   // external
 
 void fa() {
     hits = new persistent<int>(0);

@@ -2,7 +2,7 @@
 
 struct Holder { persistent<int>* p; };
 
-persistent<int>* root;
+persistent<persistent<int>*> root;
 
 // Never called: these allocations sit outside a transaction. They are here
 // only to check root-setup leaves them alone.

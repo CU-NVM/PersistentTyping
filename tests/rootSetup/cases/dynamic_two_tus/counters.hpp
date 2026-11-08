@@ -1,5 +1,5 @@
 #pragma once
 #include "persistenttype.hpp"
 
-extern persistent<int>** counters;
+extern persistent<persistent<persistent<int>*>*> counters;
 void bump_all(int n);

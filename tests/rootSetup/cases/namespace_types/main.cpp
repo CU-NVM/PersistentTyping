@@ -3,9 +3,9 @@
 
 using namespace app;
 
-persistent<Node>*         node;
-persistent<detail::Leaf>* leaf;
-persistent<lib::Item>*    item;
+persistent<persistent<Node>*>         node;
+persistent<persistent<detail::Leaf>*> leaf;
+persistent<persistent<lib::Item>*>    item;
 
 int main() {
     node = new persistent<Node>();

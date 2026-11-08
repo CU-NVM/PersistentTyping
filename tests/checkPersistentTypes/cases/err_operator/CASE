@@ -1,4 +1,0 @@
-# An overloaded operator used to be dropped from persistent<C> without a word.
-pass: all
-expect: fail
-error: Point::operator==: overloaded operators are not supported

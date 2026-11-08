@@ -1,4 +1,0 @@
-# A root array is its slots in __pers_root; it can be indexed, but not
-# handed around as a whole.
-expect: fail
-error: root array 'slots' can only be used as slots[i]

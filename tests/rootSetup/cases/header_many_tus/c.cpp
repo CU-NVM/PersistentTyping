@@ -1,3 +1,3 @@
 #include "roots.hpp"
 
-persistent<int>* shared;
+persistent<persistent<int>*> shared;

@@ -1,5 +1,0 @@
-# Globals that hold persistent objects in a shape root-setup cannot make a
-# slot of are errors, not silently left in DRAM.
-expect: fail
-error: 'list' mentions persistent<> but is not a root
-error: 'deep' mentions persistent<> but is not a root

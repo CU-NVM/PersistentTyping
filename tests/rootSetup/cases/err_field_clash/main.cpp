@@ -1,6 +1,6 @@
 #include "persistenttype.hpp"
 
 int main() {
-    persistent<int>* counter = new persistent<int>(1);   // main-local: also field `counter`
+    static persistent<persistent<int>*> counter = new persistent<int>(1);   // static local: also field `counter`
     (void)counter;
 }

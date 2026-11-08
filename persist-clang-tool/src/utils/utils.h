@@ -58,10 +58,24 @@ getMethodBodyText(const clang::CXXMethodDecl* method,
 std::set<std::string> findExistingPersistentSpecs(clang::ASTContext& context,
                                                   const clang::PrintingPolicy& policy);
 
-// True if `vd` can be a root: a variable at namespace scope (global, in a
-// namespace, in an anonymous namespace), a static local, or a local of
-// main(). Parameters never are.
+// True if `vd` can be a root: a variable with static storage duration that
+// is not a class member, i.e. one at namespace scope (global, in a namespace,
+// in an anonymous namespace) or a static local of any function, main
+// included. Automatic locals, parameters, thread_locals and static data
+// members never are.
 bool isRootCandidate(const clang::VarDecl* vd);
+
+// The library's persistent<X> that `t` names, or null. Works on the canonical
+// type, so spaces, typedefs, `using` aliases, alias templates and pmem_ptr<U>
+// (which is persistent<U*>) all give the same answer.
+const clang::ClassTemplateSpecializationDecl* persistentSpecialization(clang::QualType t);
+
+// The X of the library's persistent<X>, as a canonical type, or a null type
+// if `t` is not one:
+//   persistent<int>                -> int
+//   persistent<persistent<Node>*>  -> persistent<Node>*
+//   Node*, int                     -> null
+clang::QualType extractTargetFromPersistentType(clang::QualType t);
 
 // The constructor arguments of `new T(args)` or `new T{args}` as source text,
 // without the parentheses or braces. Empty for `new T` and `new T()`.

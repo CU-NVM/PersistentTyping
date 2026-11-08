@@ -1,7 +1,7 @@
 #include "counter.hpp"
 #include "rt.hpp"
 
-persistent<int>* counter;
+persistent<persistent<int>*> counter;
 
 void work() {
     counter = new persistent<int>(100);

@@ -3,10 +3,10 @@
 using PInt = persistent<int>;
 typedef persistent<long> PLong;
 
-PInt* c;
+persistent<PInt*> c;
 
 int main() {
-    PLong* d = new PLong(7);
+    static persistent<PLong*> d = new PLong(7);
     c = new PInt(3);
     bump(c, "c");
     bump(d, "d");

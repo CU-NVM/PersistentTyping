@@ -17,6 +17,13 @@ void bump(persistent<T>* p, const char* name) {
     std::cout << name << " " << p->load() << "\n";
 }
 
+// A root is a slot, persistent<persistent<T>*>; deduction above does not see
+// through its conversion to persistent<T>*, so it gets its own overload.
+template<typename T>
+void bump(persistent<persistent<T>*>& slot, const char* name) {
+    bump(slot.get(), name);
+}
+
 // Objects in the pool, the root object excluded.
 inline int object_count() {
     int n = 0;

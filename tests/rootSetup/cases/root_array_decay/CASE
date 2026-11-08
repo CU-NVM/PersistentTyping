@@ -1,0 +1,5 @@
+# A root array used whole, not only as slots[i]: its slot in __pers_root has
+# the same type, so it decays to a pointer exactly as before the rewrite.
+in main.cpp: sum(__pers_get_root()->slots, 2)
+out: s0 {n+1}
+out: sum {n+3}

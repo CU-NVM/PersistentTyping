@@ -19,15 +19,17 @@
 
 // How a root variable is visible across translation units. Only External
 // roots can be named from another TU; the other two stay in their own file.
-// MainLocal covers a local of main() and a static local of any function.
-enum class RootLinkage { External, Internal, MainLocal };
+// StaticLocal is a static local of any function, main included.
+enum class RootLinkage { External, Internal, StaticLocal };
 
-// What a root declaration holds, and the __pers_root field it becomes:
-//   Scalar   persistent<T>* r          -> pmem_ptr<persistent<T>> r;
-//   Fixed    persistent<T>* r[N]       -> pmem_ptr<persistent<T>> r[N];
-//   Dynamic  persistent<T>** r         -> pmem_ptr<pmem_ptr<persistent<T>>> r;
-// Keeping N, or the n of `r = new persistent<T>*[n]`, the same across runs is
-// the program's responsibility, as with any other C++ array.
+// A root is a persistent<...> object with static storage: a pmem slot, which
+// moves into __pers_root unchanged. What it holds:
+//   Scalar   persistent<persistent<T>*> r                -> one T
+//   Fixed    persistent<persistent<T>*> r[N]             -> N slots of T
+//   Dynamic  persistent<persistent<persistent<T>*>*> r   -> a pool array of
+//            slots of T, allocated by r = new persistent<persistent<T>*>[n]
+// Keeping N, or that n, the same across runs is the program's responsibility,
+// as with any other C++ array.
 enum class RootShape { Scalar, Fixed, Dynamic };
 
 // One declaration of a root variable. A root usually has one definition and
@@ -36,8 +38,7 @@ struct RootDeclRecord {
     std::string typeName;
     std::string varName;
     RootShape shape;
-    unsigned arraySize;     // Fixed: N, or 0 for `extern persistent<T>* r[];`
-    bool isPointer;         // false for `persistent<T> r;`, which is an error
+    unsigned arraySize;     // Fixed: N, or 0 for `extern persistent<persistent<T>*> r[];`
     RootLinkage linkage;
     bool isDefinition;
     std::string file;
@@ -49,12 +50,16 @@ struct RootDeclRecord {
     std::string error;      // a problem only this declaration has
 };
 
-// A statement that initialises a root, recorded by file offset because a
-// clang::SourceRange is only valid inside its own TU.
-//   Object   r = new persistent<T>(args)     -> pmem_get_or_create(slot, args)
-//   Array    r = new persistent<T>*[n]       -> allocate only if the slot is null
-//   Element  r[i] = new persistent<T>(args)  -> pmem_get_or_create(slot[i], args)
-enum class InitKind { Object, Array, Element };
+// A statement that initialises a root, or one element of a root array (`r[i]
+// = ...`), recorded by file offset because a clang::SourceRange is only valid
+// inside its own TU. Either way the `new` runs only while the slot is null, so
+// a later run reuses what the first one made:
+//   Object   r = new persistent<T>(args)  -> pmem_get_or_create(slot, args)
+//   Array    r = new X[n]                 -> in one transaction:
+//                                            if (!slot) slot = new X[n];
+// X is whatever the user wrote: persistent<T>, or persistent<persistent<T>*>
+// for a dynamic root array.
+enum class InitKind { Object, Array };
 
 struct InitSiteRecord {
     InitKind kind;
@@ -64,26 +69,21 @@ struct InitSiteRecord {
     std::string file;
     unsigned offset;        // the whole assignment, or the whole declaration
     unsigned length;
-    std::string initArgs;   // Object, Element
-    std::string index;      // Element: the text of i
-    std::string count;      // Array: the text of n
-    bool inDeclaration;     // `persistent<T>* r = new ...;`
+    std::string initArgs;   // Object: the constructor arguments
+    std::string newText;    // Array: the user's `new X[n]`, as written
+    std::string index;      // the text of i in `r[i] = ...`, or empty
+    bool inDeclaration;     // `persistent<persistent<T>*> r = new ...;`
     bool atFileScope;       // ... of a global, so it must stay a declaration
     std::string location;
 };
 
-// Any other mention of a root, which becomes its slot:
-//   read             r       -> __pers_get_root()->r.get()    (same type as before)
-//   written, &r      r       -> __pers_get_root()->r
-//   element read     r[i]    -> __pers_get_root()->r[i].get()
-//   element written  r[i]    -> __pers_get_root()->r[i]
+// Any other mention of a root: `r` becomes __pers_get_root()->r, its slot,
+// which has the same type, so r[i], *r, r->f and &r need nothing else.
 struct UseRecord {
     std::string rootKey;
     std::string file;
     unsigned offset;
     unsigned length;
-    bool read;              // append .get() to the slot
-    unsigned elementEnd;    // element read: offset just past `]`, else 0
     std::string location;
     std::string error;
 };

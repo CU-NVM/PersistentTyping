@@ -258,6 +258,13 @@ public:
 
     template<typename... Args>
     explicit persistent(Args&&... args) : T(std::forward<Args>(args)...) {}
+
+    // `new persistent<C>` allocates in the pool before the tool runs too, as
+    // in every specialisation it generates, so a root slot can point at it.
+    static void* operator new(std::size_t sz)   { return pmem_alloc(sz, alignof(T)); }
+    static void* operator new[](std::size_t sz) { return pmem_alloc(sz, alignof(T)); }
+    static void  operator delete(void* ptr)     { pmem_free(ptr); }
+    static void  operator delete[](void* ptr)   { pmem_free(ptr); }
 #endif
 };
 

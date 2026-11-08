@@ -1,5 +1,5 @@
 #pragma once
 #include "persistenttype.hpp"
 
-extern persistent<int>* counter;
+extern persistent<persistent<int>*> counter;
 void work();

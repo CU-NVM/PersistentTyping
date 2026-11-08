@@ -2,8 +2,8 @@
 # get-or-create, so the counters behind them are reread on every run.
 header: pmem_ptr<persistent<int>> slots[3];
 in main.cpp: pmem_get_or_create<persistent<int>>(__pers_get_root()->slots[i], i * 10);
-in main.cpp: bump(__pers_get_root()->slots[i].get(), "slot");
-notin main.cpp: persistent<int>* slots[3];
+in main.cpp: bump(__pers_get_root()->slots[i], "slot");
+notin main.cpp: persistent<persistent<int>*> slots[3];
 out: slot {n}
 out: slot {n+10}
 out: slot {n+20}

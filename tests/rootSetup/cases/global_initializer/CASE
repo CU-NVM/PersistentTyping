@@ -1,5 +1,5 @@
 # A root initialised at file scope: the rewritten initializer calls
 # __pers_get_root() during static initialisation, before main().
 in main.cpp: [[maybe_unused]] static persistent<int>* const __pers_init_g = pmem_get_or_create<persistent<int>>(__pers_get_root()->g, 3);
-in main.cpp: bump(__pers_get_root()->g.get(), "g");
+in main.cpp: bump(__pers_get_root()->g, "g");
 out: g {n+3}

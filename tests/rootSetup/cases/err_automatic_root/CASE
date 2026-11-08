@@ -1,0 +1,4 @@
+# A persistent object on the stack is an error: it is not a root, and its
+# writes could not be logged. A DRAM pointer to pmem next to it is fine.
+expect: fail
+error: main.cpp:4:34: 'counter' is a persistent object with automatic storage; add 'static'

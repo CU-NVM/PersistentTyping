@@ -1,6 +1,6 @@
 #include "rt.hpp"
 
-persistent<int>* c;
+persistent<persistent<int>*> c;
 
 int main() {
     c = new persistent<int>{5};

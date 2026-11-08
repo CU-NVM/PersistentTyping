@@ -1,6 +1,6 @@
 #include "rt.hpp"
 
-persistent<int>* slots[3];
+persistent<persistent<int>*> slots[3];
 
 int main() {
     for (int i = 0; i < 3; i++) slots[i] = new persistent<int>(i * 10);

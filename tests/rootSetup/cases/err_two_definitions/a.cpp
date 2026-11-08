@@ -1,3 +1,3 @@
 #include "persistenttype.hpp"
 
-persistent<int>* x;
+persistent<persistent<int>*> x;

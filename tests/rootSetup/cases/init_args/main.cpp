@@ -1,10 +1,10 @@
 #include "rt.hpp"
 
-persistent<int>* bare;
-persistent<int>* empty;
-persistent<int>* expr;
-persistent<long>* call;
-persistent<double>* dbl;
+persistent<persistent<int>*> bare;
+persistent<persistent<int>*> empty;
+persistent<persistent<int>*> expr;
+persistent<persistent<long>*> call;
+persistent<persistent<double>*> dbl;
 
 static long base() { return 40; }
 

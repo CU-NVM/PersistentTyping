@@ -1,6 +1,6 @@
 #include "rt.hpp"
 
-static persistent<int>* counter;
+static persistent<persistent<int>*> counter;
 
 void work() {
     counter = new persistent<int>(100);

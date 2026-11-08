@@ -1,6 +1,6 @@
 #pragma once
 #include "persistenttype.hpp"
 
-extern persistent<int>* shared;
+extern persistent<persistent<int>*> shared;
 void fa();
 void fb();

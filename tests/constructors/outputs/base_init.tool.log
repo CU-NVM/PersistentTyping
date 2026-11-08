@@ -1,9 +1,0 @@
-Running RootSetupFrontendAction on file: /home/kidus/PersistentTyping/tests/constructors/outputs/base_init.cpp
-wrote rewritten source to /home/kidus/PersistentTyping/tests/constructors/outputs/base_init.cpp
-wrote rewritten source to /home/kidus/PersistentTyping/tests/constructors/outputs/base_init_pers_root.hpp
-Running RecursePersistentFrontendAction on file: /home/kidus/PersistentTyping/tests/constructors/outputs/base_init.cpp
-error: /home/kidus/PersistentTyping/tests/constructors/outputs/base_init.cpp:28:13: field 'Holder::w': 'Widget': inheritance is not supported yet
-error: /home/kidus/PersistentTyping/tests/constructors/outputs/base_init.cpp:33:13: new Widget: 'Widget': inheritance is not supported yet
-recurse-persistent: not writing /home/kidus/PersistentTyping/tests/constructors/outputs/base_init.cpp because of the errors above
-Handling translation unit in RecurseConsumer
-Starting RecursePersistentTyper

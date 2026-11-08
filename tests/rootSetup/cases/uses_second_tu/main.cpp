@@ -1,7 +1,7 @@
 #include "slots.hpp"
 #include "rt.hpp"
 
-persistent<int>* slots[2];
+persistent<persistent<int>*> slots[2];
 
 int main() {
     slots[0] = new persistent<int>(0);

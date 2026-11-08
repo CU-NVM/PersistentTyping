@@ -1,5 +1,5 @@
 #pragma once
 #include "persistenttype.hpp"
 
-extern persistent<int>* slots[];
+extern persistent<persistent<int>*> slots[];
 void fb();
