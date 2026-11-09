@@ -4,12 +4,9 @@
 
 struct Here { int v; };   // defined in the .cpp itself
 
-persistent<persistent<Box>*>   box;
-persistent<persistent<Shape>*> shape;
-persistent<persistent<Here>*>  here;
+persistent<persistent<Box>*> box = new persistent<Box>();
+persistent<persistent<Shape>*> shape = new persistent<Shape>();
+persistent<persistent<Here>*> here = new persistent<Here>();
 
 int main() {
-    box   = new persistent<Box>();
-    shape = new persistent<Shape>();
-    here  = new persistent<Here>();
 }

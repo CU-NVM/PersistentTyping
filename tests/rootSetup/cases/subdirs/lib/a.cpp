@@ -1,9 +1,8 @@
 #include "roots.hpp"
 #include "rt.hpp"
 
-persistent<persistent<int>*> counter;
+persistent<persistent<int>*> counter = new persistent<int>(0);
 
 void work() {
-    counter = new persistent<int>(0);
     bump(counter, "a");
 }

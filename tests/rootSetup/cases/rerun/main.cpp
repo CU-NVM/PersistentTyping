@@ -1,8 +1,7 @@
 #include "rt.hpp"
 
-persistent<persistent<int>*> counter;
+persistent<persistent<int>*> counter = new persistent<int>(0);
 
 int main() {
-    counter = new persistent<int>(0);
     bump(counter, "counter");
 }

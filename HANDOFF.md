@@ -21,6 +21,43 @@ All three PDFs are available in the project root for re-reading.
 
 ## What's been done so far
 
+**Root keys are qualified names (2026-11-09, closure to-do #7)**
+
+- A root's key is its qualified C++ name (`rootKeyOf`, stored as `RootDeclRecord::key`): `x`, `a::x`, `(anonymous namespace)::x`, or, for a static local, its function's name with parameter types, `f(int)::cache`. `RootTable::mergeKey`, which keyed file-private roots by file name, is gone.
+- Fixes two silent bugs: `a::x` and `b::x` used to share one slot, and so did same-named static locals of two functions in one file.
+- The field is the key as an identifier (`fieldName`): `a__x`, `anon__x`, `main__n` (empty `()` dropped), `f_int___cache`. The existing "two roots want the same field" check stays.
+- New errors: two file-private roots with the same key in different files ("different variables with the same name; rename one", reported alone, since that replaces the old file-stem prefixes), and a static local of a lambda.
+- Tests: `static_same_name` became `err_static_same_name` (absorbing `err_stem_clash`), `err_field_clash` became the passing `global_and_static_local`, and `mixed_linkage` renamed b.cpp's root. New: `namespaces_same_name`, `static_locals_same_name`, `err_lambda_static`. rootSetup 50/50 (`--e2e` too).
+- Not done: function-template statics (one key per instantiation), since templates aren't supported elsewhere yet.
+
+**Static locals created once through C++'s guard; by-value root arrays removed; recurse-persistent per file (2026-11-08/09)**
+
+- **Static locals.** A static local root that creates an object has its declaration replaced by a static flag whose initializer is the creation: `[[maybe_unused]] static bool __pers_init_n = (pmem_get_or_create<persistent<int>>(__pers_get_root()->n, start), true);`. C++ initialises a static local once, when first reached, behind a guard variable (`__cxa_guard_acquire`) that also makes concurrent first calls wait. So the creation runs once per run, where the declaration stood, and may use the function's parameters. Before, a plain `pmem_get_or_create(...)` statement ran on every call. Uses of a static local are the slot, as for a global. (A `static auto&` reference with a `pmem_init_slot` helper was tried and dropped as more machinery than needed.)
+- **By-value root arrays** (`persistent<int> hits[4];`) were implemented with a `pmem_array<N>` helper and then **removed at the user's request**: they are not expected to be used. They are an "unsupported shape" error again (`err_by_value_array`), to be revisited if needed. The alternative to a helper, if they come back, is a slot to the whole array (`pmem_ptr<persistent<int>[4]>`, created with `new persistent<int>[1][4]`) used as `(*slot)` like a by-value root; that needs Rule 2's `static_assert` to accept arrays of persistent objects.
+- **A recurse-persistent bug, fixed.** A class reached from a root, defined in a header that two `.cpp` files include, was specialised twice and the header corrupted. One `ClangTool` caches file contents, so the second TU worked from the header's old text. `main.cc` now runs recurse-persistent with a fresh `ClangTool` per file (`runPerFile`). This predates the week's work and would have hit YCSB. Test: `shared_header_class` (under `--e2e`).
+- Suites: rootSetup 48/48 (`--e2e` too), lib 17/17, checkPersistentTypes 12/12, translate-type-test 86/86.
+
+**Roots are created at the top of main; by-value roots (2026-11-08, closure to-do #6)**
+
+- **Creation.** A root's *definition* is the only thing that creates its object, and only while the slot is null. A global's creation moves into its own `__pers_init_<field>()`, appended to the file that defines it, so it sees that file's variables. The root header declares these, and `main()` calls them first: each after every root its initializer uses (recorded as `InitSiteRecord::uses`), and otherwise in the order the files were given and then declared. They replace the hidden `__pers_init_<field>` globals, which ran during static initialisation, in C++'s unspecified cross-file order. A static local is still created where it stands, when first reached (since 2026-11-09 through a guarded static flag, see above).
+- **Initializers may use other roots.** The uses inside a moved initializer are rewritten like any other use (`creationText`, using `InitSiteRecord::textOffset`). This was the user's idea, replacing a blanket "uses another root" error. Only a true cycle is an error.
+- **Assignments are stores.** `r = new ...` outside a declaration is no longer rewritten into get-or-create, which used to change what the C++ meant: `head = new Node(k, head)` in `push` ran once. It is an ordinary assignment to the slot and needs the caller's transaction. `VisitCXXOperatorCallExpr`, the `index` field and the "new[] as a statement" rule are gone.
+- **By-value roots.** `persistent<int> runs = 100;` and `persistent<List> list(16);` are roots of the new shape `RootShape::Value`. The slot is the same as a pointer root's; uses become `(*__pers_get_root()->r)`; and the object is always created, with the initializer's arguments (`constructorArgs`).
+- **New errors.** Roots whose initializers use each other (a cycle). By-value root arrays. A creating root defined in a header.
+- **Bugs found by probes:**
+  - `buildRootInfo` briefly returned `Value` for any non-slot type, including a plain `static int`. It now checks that the type is `persistent<...>`.
+  - An older bug: `declarationRange` recorded where global root declarations start by offset only, so a declaration in a `.cpp` at the same offset as one in a header looked like two roots in one declaration. It is now keyed by file too.
+- **Tests:** rootSetup cases now create roots in their declarations, and fill array elements themselves inside a transaction (`if (!s[i]) s[i] = new ...`). Renamed: `extern_init_elsewhere` → `extern_created_elsewhere`, `err_by_value_root` → `err_by_value_array`. Deleted: `err_array_new_in_expression`. New: `value_roots`, `init_order`, `assignment_is_store`, `initializer_uses_root` (cross-file, with the dependent file given first), `err_initializer_cycle`. rootSetup 47/47 (`--e2e` too), lib 17/17, checkPersistentTypes 12/12.
+- **Known limitation, unchanged:** free functions still can't walk pmem data before the transform (`p->next` is `Node*`); that is the parse fix, to-do #13.
+
+**Library: every write, allocation and delete needs the caller's transaction (2026-11-08, closure to-dos #1, #2)**
+
+- **`pmem_require_tx(what)`** (`pmem_allocator.hpp`) throws "<what> outside a transaction" unless a transaction is active. It is called by `persistent<T>::store`, the pmem pointer's `set()` (only for a slot that is in pmem), `writable()`, `pmem_alloc` and `pmem_free`.
+- **The library no longer opens transactions on its own.** `set()` used to wrap a lone assignment in a transaction. `pmem_alloc`/`pmem_free` used to fall back to the non-transactional `pmemobj_alloc`/`pmemobj_free`. Both hid a missing user transaction: each write was atomic, but not the operation it belonged to, and an allocation was committed before it was linked, so a crash leaked it. The only transaction the library opens itself is in `pmem_get_or_create` (root creation).
+- **Found along the way:** outside a transaction, PMDK's `pmemobj_tx_add_range_direct` **aborts the process**. It does not return an error, so the old "throws outside a transaction" in `store()` never actually threw. The explicit check fixes that.
+- **`delete` cannot throw**, because `operator delete` is implicitly `noexcept`. A delete outside a transaction therefore ends in `std::terminate` with the same message: a clear stop, but not catchable.
+- **Tests:** lib `slot_assign_outside_tx` is replaced by `outside_tx`, which covers assignment, `new` and `delete` outside a transaction, with the pool unchanged after each. The early standalone allocator tests are deleted. lib 17/17, checkPersistentTypes 12/12, rootSetup 43/43.
+
 **Rule 1/3 of the P(T) closure: a root is a static-storage persistent<...> object (2026-11-08, branch `root-setup`)**
 
 To-do #4 of the closure document. The user now writes the slot type (`persistent<persistent<T>*> r;`, `r[N]`, `persistent<persistent<persistent<T>*>*> r`), which moves into `__pers_root` unchanged. `persistent<T>*` / `[N]` / `**` are DRAM variables and are left alone.
@@ -107,10 +144,7 @@ Six stages, each tested; the current design is summarised in [Docs/clang-tool.md
   3. Two specializations via `std::enable_if`:
      - **Primitive** (`is_fundamental || is_pointer`): contains a `T contents`, has `load()`/`store()`, conversion to `T&`, `operator->` for pointer types, `operator new`/`new[]`/`delete`/`delete[]` routing through `PersistentAllocator`, `operator=`. **Both constructors now route through `store()`** for consistency.
      - **Class**: inherits from `T`, default ctor + perfect-forwarding variadic ctor.
-- [`tests/pmem_allocator_test.cpp`](tests/pmem_allocator_test.cpp) — raw allocator: alloc, write a pattern, read it back, free.
-- [`tests/persistent_allocator_test.cpp`](tests/persistent_allocator_test.cpp) — STL contract: `std::vector` (allocate/deallocate/construct), `std::list` (rebind + converting ctor), allocator equality.
-
-Both tests build with `clang++ -std=c++17 -I.. <file>.cpp -o <bin> -lpmemobj` and pass.
+- The early standalone tests `tests/pmem_allocator_test.cpp` and `tests/persistent_allocator_test.cpp` were deleted on 2026-11-08. They allocated outside any transaction, which now throws; `tests/lib` covers the library.
 
 **Phase 2 library + first real program (2026-05-13)**
 - `persistent<T>::store()` now calls `pmemobj_tx_add_range_direct(&contents, sizeof(T))` before the write. The snapshot goes into the *active* transaction's undo log, giving both durability AND atomicity from the same mechanism. If no transaction is active, the PMDK call returns nonzero and `store()` throws `std::runtime_error("Failed to add range to transaction")`. The "must be inside a transaction" contract is enforced at runtime, loudly, at the first stray write.
@@ -420,13 +454,12 @@ After pulling this file on another machine:
 1. Open Claude Code in `~/PersistentTyping/`.
 2. Say something like: *"Read HANDOFF.md and pick up at the next concrete step."*
 3. Confirm pmem mount is live (`mount | grep pmem`). If not, re-mount per Useful one-liners.
-4. Rebuild and run the two allocator tests in `tests/` as a sanity check that nothing rotted (the suites under `tests/lib`, `tests/checkPersistentTypes`, `tests/rootSetup`, `tests/constructors` and `tests/pointers` are the real checks):
+4. Rebuild the tool and run the suites as a sanity check that nothing rotted:
    ```bash
-   cd tests
-   for t in pmem_allocator_test persistent_allocator_test; do
-     rm -f /mnt/pmem-emu/global_persistent_pool
-     clang++ -std=c++17 -I.. ${t}.cpp -o $t -lpmemobj && ./$t
-   done
+   (cd persist-clang-tool/build && make -j8 && ./bin/translate-type-test)
+   (cd tests/lib && ./run_tests.py)
+   (cd tests/checkPersistentTypes && ./run_tests.py)
+   (cd tests/rootSetup && ./run_tests.py --e2e)
    ```
 5. Pick from the Next concrete step list above (discuss open questions / phase 2 / hanoi target).
 

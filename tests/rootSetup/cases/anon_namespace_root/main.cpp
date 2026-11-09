@@ -1,8 +1,7 @@
 #include "rt.hpp"
 
-namespace { persistent<persistent<int>*> hits; }
+namespace { persistent<persistent<int>*> hits = new persistent<int>(0); }
 
 int main() {
-    hits = new persistent<int>(0);
     bump(hits, "hits");
 }

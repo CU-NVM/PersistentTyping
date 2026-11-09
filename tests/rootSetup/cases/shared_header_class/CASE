@@ -1,0 +1,7 @@
+# A class reached from a root, defined in a header that two files include.
+# Under --e2e, recurse-persistent must specialise it once: one ClangTool for
+# both files used to work from the header's old text in the second file and
+# splice a second specialisation into it.
+header: pmem_ptr<persistent<Counter>> visits;
+in b.cpp: return __pers_get_root()->visits->hits;
+out: hits {n} b {n}

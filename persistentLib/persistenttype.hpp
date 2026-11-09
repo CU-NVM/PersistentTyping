@@ -92,10 +92,9 @@ public:
 
     inline void store(T data)
     __attribute__((always_inline)){
-        int succ = pmemobj_tx_add_range_direct(&contents, sizeof(contents));
-        if(succ != 0) {
+        pmem_require_tx("write to a persistent value");
+        if (pmemobj_tx_add_range_direct(&contents, sizeof(contents)) != 0)
             throw std::runtime_error("Failed to add range to transaction");
-        }
         contents = data;
     }
 
@@ -174,15 +173,6 @@ class persistent<U*, Alloc, void> {
 
     PMEMoid oid_;
 
-    // Only a slot that is itself in pmem needs logging; a copy on the DRAM
-    // stack does not.
-    void snapshot_if_pmem() {
-        if (pmem_contains(&oid_)) {
-            if (pmemobj_tx_add_range_direct(&oid_, sizeof(oid_)) != 0)
-                throw std::runtime_error("pmem_ptr assignment outside a transaction");
-        }
-    }
-
     // A pmem pointer to DRAM must never exist. pmemobj_oid() returns OID_NULL
     // for an address outside the pool, which would otherwise store a silent
     // null.
@@ -206,15 +196,15 @@ public:
     U* operator->() const { return get(); }
 
 private:
-    // Writes `oid` into the slot, logged. Outside a transaction a slot in
-    // pmem gets one of its own, so a root slot assigned from main() (a root
-    // is its slot, see root-setup) is still atomic.
+    // Writes `oid` into the slot. A slot in pmem is logged first, so it needs
+    // the caller's transaction (see pmem_require_tx); a copy of a slot on the
+    // DRAM stack needs neither.
     void set(PMEMoid oid) {
-        if (pmem_contains(&oid_) && pmemobj_tx_stage() != TX_STAGE_WORK) {
-            pmem::obj::transaction::run(pmem_pool(), [&] { set(oid); });
-            return;
+        if (pmem_contains(&oid_)) {
+            pmem_require_tx("assignment to a pmem pointer");
+            if (pmemobj_tx_add_range_direct(&oid_, sizeof(oid_)) != 0)
+                throw std::runtime_error("Failed to add range to transaction");
         }
-        snapshot_if_pmem();
         oid_ = oid;
     }
 
@@ -291,8 +281,11 @@ namespace persist_detail {
     // For a C function about to write `n` bytes at `p` (strcpy, memcpy, ...):
     // adds them to the transaction first, as persistent<char>::store would.
     inline char* writable(persistent<char>* p, std::size_t n) {
-        if (p && pmem_contains(p) && pmemobj_tx_add_range_direct(p, n) != 0)
-            throw std::runtime_error("write to a C string in pmem outside a transaction");
+        if (p && pmem_contains(p)) {
+            pmem_require_tx("write to a C string in pmem");
+            if (pmemobj_tx_add_range_direct(p, n) != 0)
+                throw std::runtime_error("Failed to add range to transaction");
+        }
         return reinterpret_cast<char*>(p);
     }
 }

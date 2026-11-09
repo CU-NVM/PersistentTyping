@@ -1,0 +1,12 @@
+# Roots held by value: persistent<int> runs = 100 and persistent<Counter>
+# visits(7) are created once, at the top of main(), with their initializers'
+# arguments, and used as (*slot); a by-value static local is created when first
+# reached, even without an initializer.
+header: pmem_ptr<persistent<int>> runs;
+header: pmem_ptr<persistent<Counter>> visits;
+in main.cpp: pmem_get_or_create<persistent<int>>(__pers_get_root()->runs, 100);
+in main.cpp: pmem_get_or_create<persistent<Counter>>(__pers_get_root()->visits, 7);
+in main.cpp: [[maybe_unused]] static bool __pers_init_calls__n = (pmem_get_or_create<persistent<long>>(__pers_get_root()->calls__n), true);
+in main.cpp: (*__pers_get_root()->runs) += 1;
+in main.cpp: (*__pers_get_root()->visits).hits += 1;
+out: runs {n+100} start 7 hits {n} calls {n}

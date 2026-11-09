@@ -79,6 +79,10 @@ clang::QualType extractTargetFromPersistentType(clang::QualType t);
 
 // The constructor arguments of `new T(args)` or `new T{args}` as source text,
 // without the parentheses or braces. Empty for `new T` and `new T()`.
+// The `(args)` or `{args}` of `new T(args)` / `new T{args}`, brackets
+// included, or an invalid range if there is none.
+clang::SourceRange initArgsRange(const clang::CXXNewExpr* newExpr);
+
 std::string extractInitArgs(const clang::CXXNewExpr* newExpr,
                             clang::ASTContext& context);
 

@@ -78,6 +78,21 @@ static int runCheckPersistentTypes(const CompilationDatabase &Compilations,
     return reportCheckPersistentTypes(Table) ? 0 : 1;
 }
 
+// Runs a pass that rewrites each TU as it goes (recurse-persistent) with a
+// fresh ClangTool per file. One ClangTool caches every file it has read, so a
+// later TU would see a shared header as it was before an earlier TU rewrote
+// it, and splice its edits into the new text at the old offsets.
+static int runPerFile(const CompilationDatabase &Compilations,
+                      const std::vector<std::string> &Files, llvm::StringRef Pass) {
+    for (const std::string &File : Files) {
+        ClangTool Tool(Compilations, {File});
+        auto F = makeFactoryForPass(Pass);
+        if (int ret = Tool.run(F.get()))
+            return ret;
+    }
+    return utils::errorCount() ? 1 : 0;
+}
+
 static bool isSourceFile(llvm::StringRef Path) {
     static const std::set<std::string> Exts = {".c", ".cc", ".cpp", ".cxx", ".c++", ".C"};
     return Exts.count(llvm::sys::path::extension(Path).str()) > 0;
@@ -167,23 +182,15 @@ int main(int argc, const char **argv) {
                     return ret;
                 continue;
             }
-            ClangTool Tool(Compilations, Files);   // fresh per pass
-            auto F = makeFactoryForPass(Pass);
-            if (int ret = Tool.run(F.get()))
+            if (int ret = runPerFile(Compilations, Files, Pass))
                 return ret;
-            if (utils::errorCount())
-                return 1;
         }
         return 0;
     }
-    auto Factory = makeFactoryForPass(PassName);
-    if (!Factory) {
+    if (!makeFactoryForPass(PassName)) {
         errs() << "error: unknown pass '" << PassName << "'\n";
         printUsage();
         return 1;
     }
-    ClangTool Tool(Compilations, Files);
-    if (int ret = Tool.run(Factory.get()))
-        return ret;
-    return utils::errorCount() ? 1 : 0;
+    return runPerFile(Compilations, Files, PassName);
 }

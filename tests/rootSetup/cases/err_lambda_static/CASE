@@ -1,0 +1,4 @@
+# A static local of a lambda has no key that stays the same across builds,
+# since a lambda's type has no stable name: an error (closure doc 6.3).
+expect: fail
+error: root 'calls' is a static local of a lambda, which has no stable name; move it into a named function

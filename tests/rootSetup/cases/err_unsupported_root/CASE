@@ -2,4 +2,4 @@
 # root-setup does not support is an error, not silently left in DRAM. A DRAM
 # global that holds pmem pointers (`list`) is fine.
 expect: fail
-error: root 'deep': only pmem pointer roots are supported
+error: root 'deep' has a shape root-setup does not support yet

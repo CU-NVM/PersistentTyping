@@ -1,4 +1,0 @@
-# A new[] into a root becomes a transaction::run(...) statement, so it has to
-# be a statement of its own, not part of a larger expression.
-expect: fail
-error: main.cpp:6:10: write 'd = new persistent<persistent<int>*>[2];' as a statement of its own

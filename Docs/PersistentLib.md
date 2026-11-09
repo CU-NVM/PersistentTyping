@@ -157,7 +157,7 @@ template<typename X> using pmem_ptr = persistent<X*>;
 - **One type, two spellings.** `pmem_ptr<pmem_ptr<persistent<HashNode>>>` and `persistent<persistent<persistent<HashNode>*>*>` are the same type. Generated code uses the `pmem_ptr` spelling because it is easier to read.
 - **A slot is one `PMEMoid` and nothing else, with no destructor.** So `new pmem_ptr<persistent<HashNode>>[n]`, a bucket array, has no array cookie.
 - **Reads need no rewriting.** Because of the implicit conversion to `U*`, `nd->next = table[k]`, `table[k] = nd`, `if (p)`, `p == q`, `cur = cur->next` and `delete[] table` all compile as the user wrote them.
-- **Writes are logged.** `operator=` adds the 16-byte slot to the transaction first, but only when the slot itself is in pmem: a `pmem_ptr` copied into a DRAM local needs no log. Outside a transaction, a slot in pmem gets a transaction of its own, which is how a root slot can be assigned from `main()`.
+- **Writes are logged.** `operator=` adds the 16-byte slot to the transaction first, but only when the slot itself is in pmem: a `pmem_ptr` copied into a DRAM local needs no log. Outside a transaction, assigning a slot in pmem throws: the caller provides the transaction (see §6.11).
 - **A pmem pointer to DRAM cannot exist.** `pmemobj_oid()` returns null for an address outside the pool. The constructor and `operator=` turn that into an exception instead of storing a silent null.
 - **The pointee must itself be `persistent<...>` (rule 2).** `persistent<int*>` (a pmem pointer to a raw `int`) is a compile error before and after the transform; write `persistent<persistent<int>*>`. The `static_assert` fires only where the type is completed, so the tool's check-persistent-types pass reports the other spellings (`persistent<int*>* p`, parameters, aliases).
 
@@ -242,8 +242,9 @@ This keeps the one thing `pmem_string` was right about: **bulk writes are logged
 
 These are used internally by `persistent<T>::operator new` and `pmem_ptr<T>`. You shouldn't normally call them directly, but they're available:
 
-- `void* pmem_alloc(size_t size, size_t align)` — `pmemobj_alloc` + `pmemobj_direct`.
-- `void  pmem_free(void* ptr)` — `pmemobj_oid` + `pmemobj_free`.
+- `void* pmem_alloc(size_t size, size_t align)` — `pmemobj_tx_alloc` + `pmemobj_direct`; needs an active transaction.
+- `void  pmem_free(void* ptr)` — `pmemobj_oid` + `pmemobj_tx_free`; needs an active transaction.
+- `void  pmem_require_tx(const char* what)` — throws "<what> outside a transaction" unless one is active. Every write, allocation and delete in the pool calls it first.
 - `bool  pmem_contains(const void* ptr)` — checks whether the pointer is in the open pool.
 
 ---
@@ -450,7 +451,7 @@ A stronger design would make `store()` only callable when a "transaction token" 
 
 **Why we didn't**: it would change every call site. `*counter = 5` becomes `counter.store(5, tx)`. The API surface ripples through every user-facing line. The cost of "stronger" guarantees was too high for Phase 2.
 
-**What we did instead**: runtime check. `store()` and `pmem_ptr::operator=` throw `runtime_error` on the first call outside a transaction. Loud, immediate, catches the bug at the right place.
+**What we did instead**: runtime check. `store()`, `pmem_ptr::operator=`, `new` and `delete` throw `runtime_error` on the first call outside a transaction, through `pmem_require_tx`. (Before 2026-11-08, `store()` relied on `pmemobj_tx_add_range_direct` returning an error, but PMDK aborts the process there instead, and `pmem_ptr::operator=` opened its own transaction.) Loud, immediate, catches the bug at the right place.
 
 Open question for the long term — see §7.
 
@@ -461,7 +462,9 @@ Open question for the long term — see §7.
 | Caller context | `pmem_alloc` uses | `pmem_free` uses |
 |----------------|-------------------|-------------------|
 | Inside a tx (`TX_STAGE_WORK`) | `pmemobj_tx_alloc` | `pmemobj_tx_free` |
-| Outside any tx | `pmemobj_alloc` | `pmemobj_free` |
+| Outside any tx | throws (since 2026-11-08) | throws; inside `operator delete`, which is `noexcept`, this ends in `std::terminate` |
+
+**Since 2026-11-08 there is no outside-a-transaction path** (closure doc to-dos #1 and #2). The non-transactional fallback committed an allocation before the program linked it anywhere, so a crash in between leaked it. The same went for the pmem pointer's old habit of opening a transaction for a lone assignment: each write was atomic, but not the operation it belonged to. The caller provides the transaction (a method's own, `pmem_get_or_create`'s, or the user's `transaction::run`), and the library only checks for it.
 
 **Why both alloc and free have to be tx-aware**: it's about keeping the whole object lifecycle in the same rollback set.
 

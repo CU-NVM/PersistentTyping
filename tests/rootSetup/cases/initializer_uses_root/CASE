@@ -1,0 +1,10 @@
+# An initializer may use other roots: the uses inside it are rewritten like any
+# other, and main() creates every root before an initializer that uses it,
+# even when that root's file is given later; in the wrong order, run 1 would
+# crash on the null `config`.
+inputs: a.cpp b.cpp
+in a.cpp: pmem_get_or_create<persistent<int>>(__pers_get_root()->table, *__pers_get_root()->config * (*__pers_get_root()->scale));
+in a.cpp: __pers_init_config();
+in a.cpp: __pers_init_scale();
+in a.cpp: __pers_init_table();
+out: table 32

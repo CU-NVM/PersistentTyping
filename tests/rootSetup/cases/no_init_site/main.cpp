@@ -1,8 +1,7 @@
 #include "rt.hpp"
 
-persistent<persistent<int>*> used;
+persistent<persistent<int>*> used = new persistent<int>(0);
 
 int main() {
-    used = new persistent<int>(0);
     bump(used, "used");
 }

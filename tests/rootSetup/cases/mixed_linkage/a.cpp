@@ -1,8 +1,7 @@
 #include "rt.hpp"
 
-persistent<persistent<int>*> hits;   // external
+persistent<persistent<int>*> hits = new persistent<int>(0);   // external
 
 void fa() {
-    hits = new persistent<int>(0);
     bump(hits, "hits");
 }

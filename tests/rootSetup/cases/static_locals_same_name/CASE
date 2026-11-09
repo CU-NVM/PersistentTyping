@@ -1,0 +1,8 @@
+# Static locals named `cache` in f(int), f(double) and g() are three roots,
+# keyed by their function's signature: f(int)::cache, f(double)::cache and
+# g()::cache.
+dump: == roots: 3 ==
+header: pmem_ptr<persistent<int>> f_int___cache;
+header: pmem_ptr<persistent<int>> f_double___cache;
+header: pmem_ptr<persistent<int>> g__cache;
+out: f(int) {n+10} f(double) {n+20} g {n+30}

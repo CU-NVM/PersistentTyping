@@ -1,6 +1,7 @@
 #include "rootSetup.h"
 #include "../utils/utils.h"
 #include <algorithm>
+#include <tuple>
 #include <filesystem>
 #include <sstream>
 #include <clang/AST/RecursiveASTVisitor.h>
@@ -30,24 +31,33 @@ namespace {
     groupByKey(const std::map<std::string, RootDeclRecord>& decls) {
         std::map<std::string, std::vector<const RootDeclRecord*>> merged;
         for (const auto& [loc, d] : decls)
-            merged[RootTable::mergeKey(d)].push_back(&d);
+            merged[d.key].push_back(&d);
         return merged;
     }
 
-    // `static` roots from different files can share a name, so their field is
-    // prefixed with the file: a.cpp's `counter` becomes `a__counter`.
+    // The root's field in __pers_root: its key as an identifier, `::` -> `__`
+    // and any other character that cannot appear in a name -> `_`:
+    //   x -> x,  a::x -> a__x,  (anonymous namespace)::x -> anon__x,
+    //   main()::n -> main__n,  f(int)::cache -> f_int___cache
     std::string fieldName(const RootDeclRecord& d) {
-        if (d.linkage != RootLinkage::Internal) return d.varName;
-        std::string stem = llvm::sys::path::stem(d.file).str();
-        for (char& c : stem)
-            if (!isalnum(static_cast<unsigned char>(c))) c = '_';
-        return stem + "__" + d.varName;
+        std::string key = d.key, out;
+        auto replaceAll = [&](const std::string& from, const std::string& to) {
+            for (size_t at; (at = key.find(from)) != std::string::npos;) key.replace(at, from.size(), to);
+        };
+        replaceAll("(anonymous namespace)", "anon");
+        replaceAll("()", "");
+        for (size_t i = 0; i < key.size(); i++) {
+            if (key.compare(i, 2, "::") == 0) { out += "__"; i++; continue; }
+            out += isalnum(static_cast<unsigned char>(key[i])) ? key[i] : '_';
+        }
+        return out;
     }
 
     // The declaration as the user wrote it, for messages and --dump-roots.
     std::string declSpelling(const RootDeclRecord& d) {
         std::string slot = "persistent<persistent<" + d.typeName + ">*>";
         switch (d.shape) {
+            case RootShape::Value:   return "persistent<" + d.typeName + ">";
             case RootShape::Scalar:  return slot;
             case RootShape::Fixed:   return slot + " [" + (d.arraySize ? std::to_string(d.arraySize) : "") + "]";
             case RootShape::Dynamic: return "persistent<" + slot + "*>";
@@ -60,6 +70,7 @@ namespace {
                           const std::string& field) {
         std::string slot = "pmem_ptr<persistent<" + type + ">>";
         switch (shape) {
+            case RootShape::Value:
             case RootShape::Scalar:  return slot + " " + field + ";";
             case RootShape::Fixed:   return slot + " " + field + "[" + std::to_string(size) + "];";
             case RootShape::Dynamic: return "pmem_ptr<" + slot + "> " + field + ";";
@@ -68,22 +79,25 @@ namespace {
     }
 }
 
-std::string RootTable::mergeKey(const RootDeclRecord& d) {
-    return mergeKey(d.linkage, d.file, d.varName);
-}
-
-std::string RootTable::mergeKey(RootLinkage linkage, const std::string& file,
-                                const std::string& varName) {
-    if (linkage == RootLinkage::External) return varName;
-    return file + "::" + varName;
-}
-
 std::vector<MergedRoot> RootTable::merge(std::vector<std::string>& errors) const {
     std::vector<MergedRoot> roots;
     std::map<std::string, std::string> fieldOwner;   // field -> key that took it
 
     for (const auto& [key, group] : groupByKey(decls)) {
         const RootDeclRecord& first = *group.front();
+        // Two file-private variables (`static`, or in an anonymous namespace)
+        // with the same qualified name in different files are different
+        // variables that one key cannot tell apart; nothing else about them
+        // is worth reporting.
+        auto other = std::find_if(group.begin(), group.end(), [&](const RootDeclRecord* d) {
+            return d->linkage != RootLinkage::External && d->file != first.file;
+        });
+        if (other != group.end()) {
+            errors.push_back("roots named '" + key + "' in " + first.location + " and "
+                             + (*other)->location + " are different variables with the same "
+                             "name; rename one");
+            continue;
+        }
         const RootDeclRecord* def = &first;
         unsigned defs = 0;
         for (const RootDeclRecord* d : group)
@@ -137,7 +151,7 @@ void RootTable::print(llvm::raw_ostream& out) const {
         for (const auto& [loc, s] : initSites) {
             if (s.rootKey != key) continue;
             out << "  " << kinds[static_cast<int>(s.kind)]
-                << (s.index.empty() ? "" : " [" + s.index + "]") << " at " << s.location
+                << (s.atFileScope ? " (in __pers_init)" : "") << " at " << s.location
                 << "  (offset " << s.offset << ", length " << s.length << ")"
                 << (s.initArgs.empty() ? "" : "  args=`" + s.initArgs + "`") << "\n";
         }
@@ -191,7 +205,8 @@ namespace {
     //   persistent<persistent<T>*>[N]            -> {Fixed,   N, element T}
     //   persistent<persistent<T>*>[]  (extern)   -> {Fixed,   0, element T}
     //   persistent<persistent<persistent<T>*>*>  -> {Dynamic, element T}
-    //   persistent<int>, persistent<List>        -> nothing (by-value roots: not yet)
+    //   persistent<T>, e.g. persistent<List>      -> {Value,   element T}
+    //   persistent<T>[N]                         -> nothing (by-value arrays)
     // T itself is never a pointer, so a slot of slots of slots is nothing too.
     std::optional<RootInfo> buildRootInfo(clang::QualType qt, const clang::ASTContext& ctx) {
         RootInfo root;
@@ -205,7 +220,12 @@ namespace {
             t = at->getElementType().getCanonicalType();
         }
         clang::QualType object = slotTarget(t);         // persistent<T>, or another slot
-        if (object.isNull()) return std::nullopt;
+        if (object.isNull()) {
+            root.element = extractTargetFromPersistentType(t);
+            if (root.element.isNull() || root.shape == RootShape::Fixed) return std::nullopt;
+            root.shape = RootShape::Value;
+            return root;
+        }
         if (clang::QualType inner = slotTarget(object); !inner.isNull()) {
             if (root.shape == RootShape::Fixed) return std::nullopt;
             root.shape = RootShape::Dynamic;
@@ -238,8 +258,12 @@ namespace {
         bool VisitFunctionDecl(clang::FunctionDecl* fd) {
             if (!fd->doesThisDeclarationHaveABody()) return true;
             clang::SourceLocation begin = SM.getFileLoc(fd->getBeginLoc());
-            if (fd->isMain())
+            if (fd->isMain()) {
                 table.mainFiles[fileOf(SM, begin)] = SM.getFileOffset(begin);
+                if (const auto* body = llvm::dyn_cast<clang::CompoundStmt>(fd->getBody()))
+                    table.mainBodies[fileOf(SM, begin)] =
+                        SM.getFileOffset(SM.getFileLoc(body->getLBracLoc())) + 1;
+            }
             if (fd->getDeclName().isIdentifier() && fd->getName() == "__pers_get_root")
                 table.accessorFiles.insert(fileOf(SM, begin));
             return true;
@@ -259,53 +283,27 @@ namespace {
             }
             auto root = buildRootInfo(vd->getType(), context);
             if (!root)
-                return error(loc, "root '" + name + "': only pmem pointer roots are supported "
-                                  "for now: persistent<persistent<T>*> r, persistent<persistent<T>*> "
-                                  "r[N] or persistent<persistent<persistent<T>*>*> r");
+                return error(loc, "root '" + name + "' has a shape root-setup does not support "
+                                  "yet; a root is persistent<T> r, persistent<persistent<T>*> r, "
+                                  "persistent<persistent<T>*> r[N] or "
+                                  "persistent<persistent<persistent<T>*>*> r");
 
             std::string typeName = root->element.getAsString(printPolicy);
             std::string where = locationOf(SM, loc);
+            // A lambda's type has no name that stays the same across builds.
+            if (const auto* md = llvm::dyn_cast<clang::CXXMethodDecl>(vd->getDeclContext()))
+                if (vd->isStaticLocal() && md->getParent()->isLambda())
+                    return error(loc, "root '" + name + "' is a static local of a lambda, which has "
+                                      "no stable name; move it into a named function");
+
             RootDeclRecord d{typeName, name, root->shape, root->arraySize, linkageOf(vd),
                              vd->isThisDeclarationADefinition() != clang::VarDecl::DeclarationOnly,
-                             fileOf(SM, loc), where, 0, 0, ""};
+                             fileOf(SM, loc), where, 0, 0, "", rootKeyOf(vd)};
             declarationRange(vd, d);
             recordType(typeName, root->element);
-            if (vd->hasInit() && d.error.empty())
-                recordDeclInit(vd, *root, d);
+            if (d.isDefinition && d.error.empty())
+                recordCreation(vd, *root, d);
             table.decls.emplace(where, d);
-            return true;
-        }
-
-        // `r = new persistent<T>(...)`, `r = new persistent<persistent<T>*>[n]`
-        // and `r[i] = new persistent<T>(...)` outside the declaration. A root
-        // is a slot, a class, so `=` is a call of its operator=.
-        bool VisitCXXOperatorCallExpr(clang::CXXOperatorCallExpr* op) {
-            if (op->getOperator() != clang::OO_Equal || op->getNumArgs() != 2) return true;
-            const auto* ne = llvm::dyn_cast<clang::CXXNewExpr>(op->getArg(1)->IgnoreUnlessSpelledInSource());
-            if (!ne) return true;
-            const clang::Expr* lhs = op->getArg(0)->IgnoreUnlessSpelledInSource();
-            const clang::Expr* index = nullptr;
-            if (const auto* ase = llvm::dyn_cast<clang::ArraySubscriptExpr>(lhs)) {
-                index = ase->getIdx();
-                lhs = ase->getBase()->IgnoreUnlessSpelledInSource();
-            }
-            const auto* dref = llvm::dyn_cast<clang::DeclRefExpr>(lhs);
-            const auto* vd = dref ? llvm::dyn_cast<clang::VarDecl>(dref->getDecl()) : nullptr;
-            if (!vd || !utils::isRootCandidate(vd)) return true;
-            auto root = buildRootInfo(vd->getType(), context);
-            if (!root) return true;
-            clang::SourceLocation begin = SM.getFileLoc(op->getBeginLoc());
-            if (SM.isInSystemHeader(begin)) return true;
-
-            // C++ itself rejects a `new` that does not fit the slot, now that a
-            // root is a slot. The rewrite of a `new[]` is a transaction::run(...)
-            // statement, so it cannot sit inside a larger expression.
-            if (ne->isArray() && !isStatement(op))
-                return error(begin, "write '" + textOf(op->getSourceRange())
-                                    + ";' as a statement of its own");
-            InitSiteRecord site = siteFor(vd, *root, ne, op->getSourceRange());
-            if (index) site.index = textOf(index->getSourceRange());
-            table.initSites.emplace(site.location, site);
             return true;
         }
 
@@ -318,9 +316,7 @@ namespace {
             clang::SourceLocation fb = SM.getFileLoc(b);
             if (SM.isInSystemHeader(fb)) return true;
             std::string name = vd->getNameAsString();
-            std::string key = RootTable::mergeKey(linkageOf(vd),
-                                                  fileOf(SM, SM.getFileLoc(vd->getLocation())), name);
-            UseRecord u{key, fileOf(SM, fb), SM.getFileOffset(fb), 0, locationOf(SM, fb), ""};
+            UseRecord u{rootKeyOf(vd), fileOf(SM, fb), SM.getFileOffset(fb), 0, locationOf(SM, fb), ""};
             if (b.isMacroID() || e.isMacroID())
                 u.error = "root '" + name + "' is used inside a macro, which cannot be rewritten";
             else
@@ -334,21 +330,14 @@ namespace {
         const clang::PrintingPolicy& printPolicy;
         clang::ASTContext& context;
         const clang::SourceManager& SM;
-        std::set<unsigned> globalBegins;    // where each global root declaration starts
+        // Where each global root declaration starts, so two roots declared in one
+        // declaration (`persistent<...> a, b;`) are caught. Keyed by file too: two
+        // files can have declarations at the same offset.
+        std::set<std::pair<clang::FileID, unsigned>> globalBegins;
 
         bool error(clang::SourceLocation loc, const std::string& what) {
             table.errors[locationOf(SM, loc)] = what;
             return true;
-        }
-
-        clang::DynTypedNode parentOf(const clang::Stmt* s) {
-            auto parents = context.getParents(*s);
-            return parents.empty() ? clang::DynTypedNode() : parents[0];
-        }
-
-        bool isStatement(const clang::Expr* e) {
-            clang::DynTypedNode p = parentOf(e);
-            return p.get<clang::Stmt>() && !p.get<clang::Expr>();
         }
 
         clang::SourceLocation endOf(clang::SourceLocation tokenLoc) {
@@ -361,28 +350,6 @@ namespace {
                 clang::CharSourceRange::getTokenRange(SM.getFileLoc(r.getBegin()),
                                                       SM.getFileLoc(r.getEnd())),
                 SM, context.getLangOpts()).str();
-        }
-
-        InitSiteRecord siteFor(const clang::VarDecl* vd, const RootInfo& root,
-                               const clang::CXXNewExpr* ne, clang::SourceRange range) {
-            clang::SourceLocation begin = SM.getFileLoc(range.getBegin());
-            unsigned offset = SM.getFileOffset(begin);
-            InitSiteRecord site;
-            site.kind = ne->isArray() ? InitKind::Array : InitKind::Object;
-            site.typeName = root.element.getAsString(printPolicy);
-            site.varName = vd->getNameAsString();
-            site.rootKey = RootTable::mergeKey(linkageOf(vd),
-                                               fileOf(SM, SM.getFileLoc(vd->getLocation())),
-                                               site.varName);
-            site.file = fileOf(SM, begin);
-            site.offset = offset;
-            site.length = SM.getFileOffset(endOf(range.getEnd())) - offset;
-            site.initArgs = utils::extractInitArgs(ne, context);
-            if (ne->isArray()) site.newText = textOf(ne->getSourceRange());
-            site.inDeclaration = false;
-            site.atFileScope = false;
-            site.location = locationOf(SM, begin);
-            return site;
         }
 
         // The declaration's text with its `;`: a local's DeclStmt, or a
@@ -402,7 +369,7 @@ namespace {
                 auto next = clang::Lexer::findNextToken(SM.getFileLoc(vd->getSourceRange().getEnd()),
                                                         SM, context.getLangOpts());
                 if (!next || !next->is(clang::tok::semi)
-                    || !globalBegins.insert(SM.getFileOffset(b)).second) {
+                    || !globalBegins.insert({SM.getFileID(b), SM.getFileOffset(b)}).second) {
                     d.error = own;
                     return;
                 }
@@ -412,24 +379,85 @@ namespace {
             d.length = SM.getFileOffset(e) - d.offset;
         }
 
-        // `persistent<persistent<T>*> r = new persistent<T>(...);` and the
-        // like: the init site replaces the whole declaration.
-        void recordDeclInit(const clang::VarDecl* vd, const RootInfo& root, RootDeclRecord& d) {
+        // Records how a root's definition creates its object, if it does:
+        //   persistent<persistent<T>*> r = new persistent<T>(args);   Object
+        //   persistent<persistent<persistent<T>*>*> r = new X[n];       Array
+        //   persistent<T> r(args); / = v; / no initializer              Object
+        // A pointer root with no initializer, or `= nullptr`, starts null and
+        // creates nothing. A Value root is always created.
+        void recordCreation(const clang::VarDecl* vd, const RootInfo& root, RootDeclRecord& d) {
             const clang::Expr* init = vd->getInit();
-            const auto* ne = llvm::dyn_cast<clang::CXXNewExpr>(init->IgnoreUnlessSpelledInSource());
-            if (!ne) {
-                if (!isNullInit(init, context))
-                    d.error = "root '" + d.varName + "' can only be initialised with "
-                              "new persistent<T>(...)";
-                return;
+            InitSiteRecord site;
+            site.kind = InitKind::Object;
+            site.textOffset = 0;
+            if (root.shape == RootShape::Value) {
+                if (init) std::tie(site.initArgs, site.textOffset) = constructorArgs(init);
+            } else {
+                if (!init || isNullInit(init, context)) return;
+                const auto* ne = llvm::dyn_cast<clang::CXXNewExpr>(init->IgnoreUnlessSpelledInSource());
+                if (!ne) {
+                    d.error = "root '" + d.varName + "' can only be initialised with new";
+                    return;
+                }
+                if (ne->isArray()) {
+                    site.kind = InitKind::Array;
+                    site.newText = textOf(ne->getSourceRange());
+                    site.textOffset = SM.getFileOffset(SM.getFileLoc(ne->getBeginLoc()));
+                } else if (clang::SourceRange r = utils::initArgsRange(ne); r.isValid()) {
+                    site.initArgs = utils::extractInitArgs(ne, context);
+                    site.textOffset = SM.getFileOffset(SM.getFileLoc(r.getBegin())) + 1;
+                }
             }
-            InitSiteRecord site = siteFor(vd, root, ne, vd->getSourceRange());
+            if (init) collectRoots(init, site.uses);
+            site.typeName = d.typeName;
+            site.varName = d.varName;
+            site.rootKey = d.key;
+            site.file = d.file;
             site.offset = d.offset;
             site.length = d.length;
-            site.inDeclaration = true;
             site.atFileScope = !vd->getDeclContext()->isFunctionOrMethod();
             site.location = d.location;
             table.initSites.emplace(site.location, site);
+        }
+
+        // The arguments of `persistent<T> r(args)`, `r{args}` or `r = v`, and
+        // where they start in the file.
+        std::pair<std::string, unsigned> constructorArgs(const clang::Expr* init) {
+            const clang::Expr* e = init->IgnoreUnlessSpelledInSource();
+            std::vector<const clang::Expr*> args;
+            if (const auto* ce = llvm::dyn_cast<clang::CXXConstructExpr>(e)) {
+                for (const clang::Expr* a : ce->arguments())
+                    if (!llvm::isa<clang::CXXDefaultArgExpr>(a)) args.push_back(a);
+            } else if (const auto* ile = llvm::dyn_cast<clang::InitListExpr>(e)) {
+                for (const clang::Expr* a : ile->inits()) args.push_back(a);
+            } else {
+                args.push_back(e);
+            }
+            if (args.empty()) return {"", 0};
+            clang::SourceLocation b = args.front()->getBeginLoc();
+            return {textOf({b, args.back()->getEndLoc()}), SM.getFileOffset(SM.getFileLoc(b))};
+        }
+
+        // The key of the root `v` names, wherever it is used: its qualified
+        // name, and for a static local its function's, with the parameter
+        // types to tell overloads apart: f(int)::cache.
+        std::string rootKeyOf(const clang::VarDecl* v) {
+            const auto* fd = llvm::dyn_cast<clang::FunctionDecl>(v->getDeclContext());
+            if (!v->isStaticLocal() || !fd) return v->getQualifiedNameAsString();
+            std::string params;
+            for (const clang::ParmVarDecl* p : fd->parameters())
+                params += (params.empty() ? "" : ", ") + p->getType().getCanonicalType().getAsString(printPolicy);
+            return fd->getQualifiedNameAsString() + "(" + params + ")::" + v->getNameAsString();
+        }
+
+        // Adds the key of every root `s` names to `keys`.
+        void collectRoots(const clang::Stmt* s, std::set<std::string>& keys) {
+            if (!s) return;
+            if (const auto* dre = llvm::dyn_cast<clang::DeclRefExpr>(s))
+                if (const auto* v = llvm::dyn_cast<clang::VarDecl>(dre->getDecl()))
+                    if (utils::isRootCandidate(v) && buildRootInfo(v->getType(), context))
+                        keys.insert(rootKeyOf(v));
+            for (const clang::Stmt* child : s->children()) collectRoots(child, keys);
         }
 
         // Works out how the shared root header can name T: a forward
@@ -483,6 +511,10 @@ RootCollector::RootCollector(clang::ASTContext &context, RootTable &table)
         }
 
 void RootCollector::start() {
+    const clang::SourceManager& SM = context.getSourceManager();
+    std::string file = utils::fileOf(SM, SM.getLocForStartOfFile(SM.getMainFileID()));
+    table.tuFiles.push_back(file);
+    table.tuSizes[file] = SM.getBufferData(SM.getMainFileID()).size();
     RootCollectVisitor visitor(table, printPolicy, context);
     visitor.TraverseDecl(context.getTranslationUnitDecl());
 }
@@ -502,6 +534,7 @@ namespace {
     }
 
     std::string buildHeader(const RootTable& table, const std::vector<MergedRoot>& roots,
+                            const std::vector<std::string>& initFunctions,
                             const std::string& headerPath) {
         std::set<std::string> includes, forwardDecls;
         for (const MergedRoot& r : roots) {
@@ -532,6 +565,7 @@ namespace {
         }
         out << "};\n\n"
             << "__pers_root* __pers_get_root();\n";
+        for (const auto& f : initFunctions) out << "void " << f << "();\n";
         return out.str();
     }
 
@@ -549,41 +583,46 @@ namespace {
 }
 
 namespace {
-    // The text any other use of a root becomes: its slot in __pers_root, which
-    // has the same type as the variable it replaces, so nothing else changes.
-    std::string useSiteText(const std::string& field) {
+    std::string slotText(const std::string& field) {
         return "__pers_get_root()->" + field;
+    }
+
+    // The text any other use of a root becomes: its slot in __pers_root, or
+    // the object in it for a Value root. Either has the same type as the
+    // variable it replaces, so nothing else changes.
+    std::string useSiteText(const std::string& field, RootShape shape) {
+        return shape == RootShape::Value ? "(*" + slotText(field) + ")" : slotText(field);
     }
 
     // The note a root's declaration leaves behind, as option (b) removes it.
     std::string declSiteComment(const RootDeclRecord& d, const std::string& field) {
-        return "/* root '" + d.varName + "' is " + useSiteText(field) + " */";
+        return "/* root '" + d.varName + "' is " + useSiteText(field, d.shape) + " */";
     }
 
-    // The text an init site becomes.
-    std::string initSiteText(const InitSiteRecord& site, const std::string& field) {
-        std::string elem = "persistent<" + site.typeName + ">";
-        std::string slot = useSiteText(field);
-        if (!site.index.empty()) slot += "[" + site.index + "]";
-        std::string args = site.initArgs.empty() ? "" : ", " + site.initArgs;
-        if (site.kind == InitKind::Array) {
-            // Allocate only if the slot is still null, so a later run reuses
-            // the array; in one transaction, so a crash leaves no array behind.
-            std::string body = "if (!" + slot + ") " + slot + " = " + site.newText + "; ";
-            if (site.atFileScope)
-                return "[[maybe_unused]] static const bool __pers_init_" + field
-                     + " = (pmem::obj::transaction::run(pmem_pool(), [] { " + body + "}), true);";
-            std::string tx = "pmem::obj::transaction::run(pmem_pool(), [&] { " + body + "})";
-            return site.inDeclaration ? tx + ";" : tx;
-        }
-        std::string call = "pmem_get_or_create<" + elem + ">(" + slot + args + ")";
-        if (!site.inDeclaration) return call;
-        // A global initialiser still has to run before main(), so it stays a
-        // declaration, of a helper the program never names.
-        if (site.atFileScope)
-            return "[[maybe_unused]] static " + elem + "* const __pers_init_" + field + " = "
-                 + call + ";";
-        return call + ";";
+    // The expression that creates a root's object, if its slot is still null.
+    // `text` is the site's initArgs or newText, with its root uses rewritten.
+    std::string initSiteText(const InitSiteRecord& site, const std::string& field,
+                             const std::string& text) {
+        std::string slot = slotText(field);
+        if (site.kind == InitKind::Array)
+            // In one transaction, so a crash leaves no array behind.
+            return "pmem::obj::transaction::run(pmem_pool(), [&] { if (!" + slot + ") "
+                 + slot + " = " + text + "; })";
+        std::string args = text.empty() ? "" : ", " + text;
+        return "pmem_get_or_create<persistent<" + site.typeName + ">>(" + slot + args + ")";
+    }
+
+    // What a static local root's declaration becomes when it creates an
+    // object: a static flag whose initializer is the creation. C++ runs a
+    // static local's initializer once, when first reached (behind a guard that
+    // also makes concurrent first calls wait), so the creation runs once per
+    // run, where the user's declaration stood. Its uses are the slot, as for a
+    // global.
+    //   static persistent<persistent<int>*> n = new persistent<int>(start);
+    //     -> [[maybe_unused]] static bool __pers_init_n =
+    //            (pmem_get_or_create<persistent<int>>(__pers_get_root()->n, start), true);
+    std::string staticLocalText(const std::string& field, const std::string& creation) {
+        return "[[maybe_unused]] static bool __pers_init_" + field + " = (" + creation + ", true);";
     }
 
     bool within(unsigned offset, const std::vector<std::pair<unsigned, unsigned>>& ranges) {
@@ -619,30 +658,53 @@ bool emitRoots(const RootTable& table) {
     }
 
     std::map<std::string, std::string> fieldFor;   // root key -> field
-    for (const MergedRoot& r : roots) fieldFor[r.key] = r.field;
-
-    std::map<std::string, std::vector<TextEdit>> edits;   // file -> its edits
-    // Text an init site or declaration replaces; uses inside it are covered.
-    std::map<std::string, std::vector<std::pair<unsigned, unsigned>>> replaced;
-    std::set<std::pair<std::string, unsigned>> declsWithInit;
-
-    for (const auto& [loc, site] : table.initSites) {
-        auto field = fieldFor.find(site.rootKey);
-        if (field == fieldFor.end()) {
-            errors.push_back("init site at " + site.location + " assigns '" + site.varName
-                             + "', which is not a root of the given files");
-            continue;
-        }
-        edits[site.file].push_back({site.offset, site.length, initSiteText(site, field->second)});
-        replaced[site.file].push_back({site.offset, site.offset + site.length});
-        if (site.inDeclaration) declsWithInit.insert({site.file, site.offset});
+    std::map<std::string, RootShape> shapeFor;     // root key -> shape
+    for (const MergedRoot& r : roots) {
+        fieldFor[r.key] = r.field;
+        shapeFor[r.key] = r.shape;
     }
 
-    // Option (b): the variable is gone; its declarations leave a note behind.
+    std::map<std::string, std::vector<TextEdit>> edits;   // file -> its edits
+    // Text a declaration replaces; uses inside it are covered.
+    std::map<std::string, std::vector<std::pair<unsigned, unsigned>>> replaced;
+
+    // The site's initArgs or newText with each use of a root inside it
+    // rewritten, as the text moves away from where those uses were recorded.
+    auto creationText = [&](const InitSiteRecord& site) {
+        std::string text = site.kind == InitKind::Object ? site.initArgs : site.newText;
+        std::vector<TextEdit> inside;
+        for (const auto& [loc, u] : table.uses)
+            if (u.file == site.file && u.offset >= site.textOffset
+                && u.offset + u.length <= site.textOffset + text.size() && fieldFor.count(u.rootKey))
+                inside.push_back({u.offset - site.textOffset, u.length,
+                                  useSiteText(fieldFor[u.rootKey], shapeFor[u.rootKey])});
+        std::sort(inside.begin(), inside.end(),
+                  [](const TextEdit& a, const TextEdit& b) { return a.offset > b.offset; });
+        for (const TextEdit& e : inside) text.replace(e.offset, e.length, e.text);
+        return text;
+    };
+
+    // Global creations, by root key.
+    std::map<std::string, const InitSiteRecord*> globalSites;
+    std::map<std::pair<std::string, unsigned>, const InitSiteRecord*> localSites;   // (file, offset)
+    for (const auto& [loc, site] : table.initSites) {
+        if (!fieldFor.count(site.rootKey)) continue;  // reported by merge
+        if (site.atFileScope) globalSites[site.rootKey] = &site;
+        else localSites[{site.file, site.offset}] = &site;
+    }
+
+    // Option (b): the variable is gone. Its declarations leave a note behind,
+    // or, for a static local that creates an object, the static flag that
+    // creates it (staticLocalText).
     for (const auto& [loc, d] : table.decls) {
-        auto field = fieldFor.find(RootTable::mergeKey(d));
-        if (field == fieldFor.end() || declsWithInit.count({d.file, d.offset})) continue;
-        edits[d.file].push_back({d.offset, d.length, declSiteComment(d, field->second)});
+        auto field = fieldFor.find(d.key);
+        if (field == fieldFor.end()) continue;
+        auto site = localSites.find({d.file, d.offset});
+        std::string text = site == localSites.end()
+            ? declSiteComment(d, field->second)
+            : staticLocalText(field->second,
+                              initSiteText(*site->second, field->second, creationText(*site->second)));
+        edits[d.file].push_back({d.offset, d.length, text});
         replaced[d.file].push_back({d.offset, d.offset + d.length});
     }
 
@@ -654,7 +716,57 @@ bool emitRoots(const RootTable& table) {
         }
         auto field = fieldFor.find(u.rootKey);
         if (field == fieldFor.end()) continue;  // a declaration-only root: reported by merge
-        edits[u.file].push_back({u.offset, u.length, useSiteText(field->second)});
+        edits[u.file].push_back({u.offset, u.length, useSiteText(field->second, shapeFor[u.rootKey])});
+    }
+
+    // Global creations: each in __pers_init_<field>() at the end of its file.
+    // main() calls them so that every root is created before an initializer
+    // that uses it; otherwise in the order the files were given, then declared.
+    auto rank = [&](const InitSiteRecord* site) {
+        auto tu = std::find(table.tuFiles.begin(), table.tuFiles.end(), site->file);
+        return std::make_pair(tu - table.tuFiles.begin(), site->offset);
+    };
+    std::vector<std::string> order;     // root keys
+    std::set<std::string> created;
+    while (order.size() < globalSites.size()) {
+        const std::string* next = nullptr;
+        for (const auto& [key, site] : globalSites) {
+            if (created.count(key)) continue;
+            bool ready = std::all_of(site->uses.begin(), site->uses.end(), [&](const std::string& k) {
+                return !globalSites.count(k) || created.count(k);
+            });
+            if (ready && (!next || rank(site) < rank(globalSites.at(*next)))) next = &key;
+        }
+        if (!next) {
+            std::string cycle;
+            for (const auto& [key, site] : globalSites)
+                if (!created.count(key)) cycle += " '" + site->varName + "'";
+            errors.push_back("the initializers of roots" + cycle + " use each other, so none "
+                             "can be created first");
+            break;
+        }
+        created.insert(*next);
+        order.push_back(*next);
+    }
+
+    std::vector<std::string> initFunctions;
+    std::map<std::string, std::map<unsigned, std::string>> bodies;   // file -> offset -> function
+    for (const std::string& key : order) {
+        const InitSiteRecord& site = *globalSites.at(key);
+        if (!table.tuSizes.count(site.file)) {
+            errors.push_back(site.location + ": root '" + site.varName + "' creates its object "
+                             "in a file that is not one of the given .cpp files; define it in a .cpp file");
+            continue;
+        }
+        std::string fn = "__pers_init_" + fieldFor[key];
+        bodies[site.file][site.offset] = "\nvoid " + fn + "() {\n    "
+            + initSiteText(site, fieldFor[key], creationText(site)) + ";\n}\n";
+        initFunctions.push_back(fn);
+    }
+    for (const auto& [file, functions] : bodies) {
+        std::string text;
+        for (const auto& [offset, fn] : functions) text += fn;
+        edits[file].push_back({table.tuSizes.at(file), 0, text});
     }
 
     if (!errors.empty()) {
@@ -668,6 +780,9 @@ bool emitRoots(const RootTable& table) {
     std::string header = headerPath.str().str();
 
     edits[mainFile].push_back({mainOffset, 0, buildAccessor()});
+    std::string calls;
+    for (const auto& fn : initFunctions) calls += "\n    " + fn + "();";
+    if (!calls.empty()) edits[mainFile].push_back({table.mainBodies.at(mainFile), 0, calls});
     for (auto& [file, fileEdits] : edits)
         fileEdits.insert(fileEdits.begin(),
                          {0, 0, "#include \"" + includeSpelling(file, header) + "\"\n"});
@@ -675,7 +790,7 @@ bool emitRoots(const RootTable& table) {
     // Compute every new file before writing any, so a failure leaves the
     // sources as they were.
     std::map<std::string, std::string> output;
-    output[header] = buildHeader(table, roots, header);
+    output[header] = buildHeader(table, roots, initFunctions, header);
     for (auto& [file, fileEdits] : edits)
         if (!applyEdits(file, fileEdits, output[file], errors)) break;
     if (!errors.empty()) {

@@ -1,0 +1,10 @@
+# A root defined, with its initializer, in a.cpp and used only in main.cpp
+# through an extern declaration: a.cpp gets __pers_init_counter(), and main()
+# calls it before its first statement.
+header: pmem_ptr<persistent<int>> counter;
+header: void __pers_init_counter();
+in a.cpp: void __pers_init_counter() {
+in a.cpp: pmem_get_or_create<persistent<int>>(__pers_get_root()->counter, 0);
+in a.cpp: /* root 'counter' is __pers_get_root()->counter */
+in main.cpp: __pers_init_counter();
+out: counter {n}

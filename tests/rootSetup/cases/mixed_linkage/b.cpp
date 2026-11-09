@@ -1,8 +1,7 @@
 #include "rt.hpp"
 
-static persistent<persistent<int>*> hits;   // b.cpp's own, despite the name
+static persistent<persistent<int>*> b_hits = new persistent<int>(50);   // b.cpp's own, despite the name
 
 void fb() {
-    hits = new persistent<int>(50);
-    bump(hits, "b");
+    bump(b_hits, "b");
 }

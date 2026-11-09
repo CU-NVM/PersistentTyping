@@ -1,0 +1,14 @@
+# Each global root that creates an object gets __pers_init_<root>() at the end
+# of its file; main() calls them first, in the order the files were given and
+# then declared, since neither initializer uses the other. An initializer may
+# use its own file's variables; a root without one creates nothing.
+inputs: main.cpp a.cpp
+header: void __pers_init_from_main();
+header: void __pers_init_from_a();
+in main.cpp: __pers_init_from_main();
+in main.cpp: __pers_init_from_a();
+in a.cpp: void __pers_init_from_a() {
+in a.cpp: pmem_get_or_create<persistent<int>>(__pers_get_root()->from_a, base + 2);
+notin main.cpp: __pers_init_unset
+out: a 42
+out: main 1 unset 0

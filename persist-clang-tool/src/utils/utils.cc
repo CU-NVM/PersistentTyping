@@ -114,9 +114,7 @@ clang::QualType extractTargetFromPersistentType(clang::QualType t) {
     return ctsd->getTemplateArgs()[0].getAsType().getCanonicalType();
 }
 
-std::string extractInitArgs(const clang::CXXNewExpr* newExpr,
-                            clang::ASTContext& context)
-{
+clang::SourceRange initArgsRange(const clang::CXXNewExpr* newExpr) {
     // `new T(args)` has a direct-init range around the parentheses;
     // `new T{args}` has an initializer list instead.
     clang::SourceRange range = newExpr->getDirectInitRange();
@@ -129,6 +127,13 @@ std::string extractInitArgs(const clang::CXXNewExpr* newExpr,
         else if (const auto* ile = llvm::dyn_cast_or_null<clang::InitListExpr>(init))
             range = {ile->getLBraceLoc(), ile->getRBraceLoc()};
     }
+    return range;
+}
+
+std::string extractInitArgs(const clang::CXXNewExpr* newExpr,
+                            clang::ASTContext& context)
+{
+    clang::SourceRange range = initArgsRange(newExpr);
     if (range.isInvalid()) return "";
     std::string text = clang::Lexer::getSourceText(
         clang::CharSourceRange::getTokenRange(range),

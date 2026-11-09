@@ -1,0 +1,5 @@
+# A global `counter` and main()'s static local `counter` are different
+# variables with different qualified names (counter, main()::counter), so they
+# are different roots with different fields.
+header: pmem_ptr<persistent<int>> counter;
+header: pmem_ptr<persistent<int>> main__counter;

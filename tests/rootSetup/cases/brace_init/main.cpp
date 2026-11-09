@@ -1,8 +1,7 @@
 #include "rt.hpp"
 
-persistent<persistent<int>*> c;
+persistent<persistent<int>*> c = new persistent<int>{5};
 
 int main() {
-    c = new persistent<int>{5};
     bump(c, "c");
 }

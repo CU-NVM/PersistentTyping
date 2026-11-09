@@ -1,0 +1,3 @@
+# Two roots whose initializers use each other: no order creates either first.
+expect: fail
+error: the initializers of roots 'x' 'y' use each other, so none can be created first

@@ -1,5 +1,6 @@
 # A namespace-scope global has a single copy, like a file-scope one, so it
-# is a root; its uses, spelled app::hits, become its slot.
-header: hits
-in main.cpp: bump(__pers_get_root()->hits, "hits");
+# is a root, keyed app::hits (field app__hits); its uses, spelled app::hits,
+# become its slot.
+header: app__hits
+in main.cpp: bump(__pers_get_root()->app__hits, "hits");
 out: hits {n}

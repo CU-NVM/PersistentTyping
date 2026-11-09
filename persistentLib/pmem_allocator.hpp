@@ -10,6 +10,7 @@
 #include <libpmemobj++/transaction.hpp>
 #include <unistd.h>
 #include <stdexcept>
+#include <string>
 
 
 #define PMEM_POOL_SIZE (1024 * 1024 * 1024) // 1GB  
@@ -77,21 +78,28 @@ inline pmem::obj::pool_base& pmem_pool() {
 
 
 
+// Every write, allocation and free in the pool needs an active transaction,
+// which the caller provides: a method's own, pmem_get_or_create's, or the
+// user's transaction::run (closure doc rule 5b). Opening one here instead
+// would make each write atomic on its own but not the operation it belongs
+// to, and would commit an allocation before it is linked anywhere. PMDK's
+// transactional calls abort the process outside a transaction, so this checks
+// first and throws an error the program can see.
+inline void pmem_require_tx(const char* what) {
+    if (pmemobj_tx_stage() != TX_STAGE_WORK)
+        throw std::runtime_error(std::string(what) + " outside a transaction");
+}
+
 inline void* pmem_alloc(size_t size, size_t align){
     if(global_pool == nullptr) {
         throw std::runtime_error("PMEM pool is not initialized");
     }
-    PMEMoid oid;
-    if(pmemobj_tx_stage() == TX_STAGE_WORK){
-        oid = pmemobj_tx_alloc(size,0);
-        if (OID_IS_NULL(oid)) {
-            throw std::runtime_error("Failed to allocate memory from PMEM pool (transactional)");
-        }
-    }else {
-        int succ = pmemobj_alloc(global_pool, &oid, size, 0, NULL, NULL);
-        if(succ != 0) {
-            throw std::runtime_error("Failed to allocate memory from PMEM pool");
-        }
+    pmem_require_tx("allocation in the persistent pool");
+    // An abort of the transaction frees it, so a crash before the object is
+    // linked from a root leaks nothing.
+    PMEMoid oid = pmemobj_tx_alloc(size, 0);
+    if (OID_IS_NULL(oid)) {
+        throw std::runtime_error("Failed to allocate memory from PMEM pool");
     }
     return pmemobj_direct(oid);
 }
@@ -100,14 +108,10 @@ inline void pmem_free(void* ptr) {
     if(global_pool == nullptr) {
         throw std::runtime_error("PMEM pool is not initialized");
     }
-    PMEMoid oid = pmemobj_oid(ptr);
-    if (pmemobj_tx_stage() == TX_STAGE_WORK) {
-        int rc = pmemobj_tx_free(oid);
-        if (rc != 0) {
-            throw std::runtime_error("Failed to free memory from PMEM pool within transaction");
-        }
-    } else {
-        pmemobj_free(&oid);
+    pmem_require_tx("delete of a persistent object");
+    // Takes effect only when the transaction commits.
+    if (pmemobj_tx_free(pmemobj_oid(ptr)) != 0) {
+        throw std::runtime_error("Failed to free memory from PMEM pool");
     }
 }
 

@@ -74,46 +74,72 @@ L(U\*) = P(U)\* and L(U&) = P(U)&. Locals, parameters, return values and
 
 A root is a `persistent<...>` object with static storage (closure doc rule 3):
 a global, a namespace-scope variable (anonymous namespaces included), or a
-`static` local of any function, `main` included. The user writes the slot type
-itself, and the declaration moves into `__pers_root` unchanged:
+`static` local of any function, `main` included. Each root gets a slot in
+`__pers_root`, and the program reaches it only through that slot:
 
-| Root declaration | Holds | `__pers_root` field (same type) |
+| Root declaration | Slot in `__pers_root` | A use `r` becomes |
 |---|---|---|
-| `persistent<persistent<T>*> r;` | one `T` | `pmem_ptr<persistent<T>> r;` |
-| `persistent<persistent<T>*> r[N];` | N slots | `pmem_ptr<persistent<T>> r[N];` |
-| `persistent<persistent<persistent<T>*>*> r;` | a pool array of slots | `pmem_ptr<pmem_ptr<persistent<T>>> r;` |
+| `persistent<persistent<T>*> r;` | `pmem_ptr<persistent<T>> r;` | `__pers_get_root()->r` |
+| `persistent<persistent<T>*> r[N];` | `pmem_ptr<persistent<T>> r[N];` | `__pers_get_root()->r` |
+| `persistent<persistent<persistent<T>*>*> r;` | `pmem_ptr<pmem_ptr<persistent<T>>> r;` | `__pers_get_root()->r` |
+| `persistent<T> r;` (by value, e.g. `persistent<int>`, `persistent<List>`) | `pmem_ptr<persistent<T>> r;` | `(*__pers_get_root()->r)` |
 
-Not roots:
-- `persistent<T>*`, `persistent<T>* r[N]` and `persistent<T>**` are DRAM
-  variables pointing into pmem, and are left alone. The leak warning is to-do #5.
-- A static data member and a `thread_local` have static or thread storage, but
-  are not candidates.
+Each replacement has the type of the variable it replaces, so `*r`, `r->x`,
+`r[i]`, `&r`, `r = ...` and passing an array root whole need nothing else.
+
+**Keys (closure doc §6.3).** A root's key is its qualified C++ name, and declarations
+with the same key are the same root (`extern` declarations and their definition
+merge). Its field is the key as an identifier:
+
+| Root | Key | Field |
+|---|---|---|
+| global `x` | `x` | `x` |
+| `namespace a { … x; }` | `a::x` | `a__x` |
+| anonymous namespace | `(anonymous namespace)::x` | `anon__x` |
+| static local of `main()` / `f(int)` | `main()::n` / `f(int)::cache` | `main__n` / `f_int___cache` |
+
+Two file-private roots (`static`, or in an anonymous namespace) with the same key
+in different files are an error ("rename one"), as is a static local of a lambda,
+which has no stable name.
+
+**Creation (closure doc §6.2).** Only a root's *definition* creates its object,
+and only while its slot is null, so later runs reuse it:
+
+| Definition | Created by |
+|---|---|
+| `persistent<persistent<T>*> r = new persistent<T>(a);` | `pmem_get_or_create<persistent<T>>(slot, a);` |
+| `... r = new X[n];` (any `new[]`) | `transaction::run(... { if (!slot) slot = new X[n]; });` |
+| `persistent<T> r(a);`, `= v`, or no initializer (by value: always created) | `pmem_get_or_create<persistent<T>>(slot, a);` |
+| a pointer root with no initializer, or `= nullptr` | nothing: the slot starts null |
+
+A global's creation goes into its own `__pers_init_<root>()`, appended to the
+file that defines it, so it sees that file's own variables. The root header
+declares every one, and `main()` calls them before its first statement, each
+after every root its initializer uses, and otherwise in the order the files
+were given and then declared. Uses of roots inside a moved initializer are
+rewritten like any other use, so `table = new persistent<int>(*config * 2)`
+becomes `pmem_get_or_create<...>(slot, *__pers_get_root()->config * 2)`. A static local's declaration becomes a static flag whose initializer creates its object, `[[maybe_unused]] static bool __pers_init_n = (pmem_get_or_create<...>(slot, args), true);`: C++ runs a static local's initializer once, when first reached (behind a guard that also makes concurrent first calls wait), so the creation runs once per run where the declaration stood, and its initializer may use the function's parameters. Its uses are the slot, as for a global. **Any other `r = new ...` is an ordinary assignment**, a
+store that needs the caller's transaction, not a get-or-create.
+
+Not roots: `persistent<T>*`, `persistent<T>* r[N]` and `persistent<T>**` are DRAM
+variables pointing into pmem and are left alone (the leak warning is to-do #5);
+static data members and `thread_local`s are not candidates.
 
 Errors:
 - a persistent object in an automatic (non-`static`) local: "add 'static'";
-- a root of an unsupported shape: by-value `persistent<int>` / `persistent<List>`
-  (to-do #6), or a slot of slots of slots.
+- an unsupported shape: an array of persistent objects by value (`persistent<int> r[N]`), or a slot of slots of slots;
+- roots whose initializers use each other, so neither can be created first;
+- a root that creates its object defined in a header instead of a `.cpp`.
 
-Its declarations are replaced by a comment, and every mention of it in every
-file is rewritten:
-
-| User code | Rewritten |
-|---|---|
-| `r = new persistent<T>(a)` | `pmem_get_or_create<persistent<T>>(__pers_get_root()->r, a)` |
-| `r[i] = new persistent<T>(a)` | `pmem_get_or_create<persistent<T>>(__pers_get_root()->r[i], a)` |
-| `r = new X[n]`, `r[i] = new X[n]` (any `new[]`) | `pmem::obj::transaction::run(pmem_pool(), [&] { if (!slot) slot = new X[n]; })`, with the user's `new` copied as written; it must be a statement of its own |
-| any other `r` | `__pers_get_root()->r`, which has the same type, so `*r`, `r->x`, `r[i]`, `&r` and passing an array root whole need nothing else |
-
-The slot is a class, so `r = new ...` is a call of its `operator=`; the init-site
-visitor matches `CXXOperatorCallExpr`, and `IgnoreUnlessSpelledInSource()` sees
-through the implicit conversions around `r[i]` and declaration initialisers.
-A `new` that does not fit the slot (an object into a dynamic root, assigning a
-whole fixed array) is already a C++ type error, so root-setup checks no shapes.
-
-- **Initialised globals.** A global initialised in its declaration keeps a helper declaration (`__pers_init_<r>`), so its initialisation still runs before `main()`.
 - **Array size across runs.** Keeping `n` the same across runs on one pool is the program's responsibility; changing it is undefined (PersistentLib.md, "Arrays").
 - **Rerunning root-setup on its own output changes nothing.**
 - **Before the transform**, `new persistent<C>` already allocates in the pool, so the untransformed program's slots can point at it.
+
+**recurse-persistent runs one `ClangTool` per file** (`runPerFile` in `main.cc`).
+One `ClangTool` caches every file it reads, so a later TU saw a shared header as
+it was before an earlier TU rewrote it, and spliced a second specialisation into
+the new text at the old offsets. With a fresh tool per file, the later TU sees
+the specialisation (`findExistingPersistentSpecs`) and skips the class.
 
 ### Tests
 
@@ -122,7 +148,7 @@ whole fixed array) is already a C++ type error, so root-setup checks no shapes.
 | `persist-clang-tool/build/bin/translate-type-test` | run it | P: 53 rows + idempotence |
 | `tests/lib` | `./run_tests.py` | library alone: type identity, compile errors, two runs, cookies, `delete[]`, four crash points, slot assignment outside a transaction |
 | `tests/checkPersistentTypes` | `./run_tests.py` | legal spellings, every position, shared headers, rule-2 / double-wrap / array / void / alias errors |
-| `tests/rootSetup` | `./run_tests.py [--e2e]` | roots in the slot spelling, root arrays, static locals, option b across TUs, automatic and unsupported-root errors, a crash during root-array allocation |
+| `tests/rootSetup` | `./run_tests.py [--e2e]` | roots in the slot spelling and by value, root arrays, static locals, creation in `__pers_init_<root>()` and its dependency order, assignments as stores, option b across TUs, the root errors, a crash during root-array allocation |
 
 The old `tests/constructors` and `tests/pointers` suites were written for the
 old root spelling and were deleted on 2026-11-08; new end-to-end tests are

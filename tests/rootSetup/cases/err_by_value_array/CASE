@@ -1,0 +1,4 @@
+# A by-value root is supported, but an array of persistent objects by value is
+# not: write persistent<persistent<T>*> r[N] instead.
+expect: fail
+error: root 'hits' has a shape root-setup does not support yet

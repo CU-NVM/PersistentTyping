@@ -68,13 +68,17 @@ SCENARIOS = {
         ("inspect", ["ROOT 0", "OBJS 0"], 0),
         ("run", AFTER_RUN_1, 0),
     ],
-    # A root slot assigned outside any transaction (main() under root-setup's
-    # option b) runs the assignment in a transaction of its own: no throw,
-    # and the next run sees it.
-    "slot_assign_outside_tx": [
+    # A write, allocation or delete in the pool needs the caller's
+    # transaction: outside one, assigning a slot and `new` throw, and `delete`
+    # (which cannot throw) stops the program. The pool is unchanged each time.
+    "outside_tx": [
         ("cookie-make", ["HAS 1", "VALUES 10 20 30", "OFFSET 8"], 0),
-        ("unlink-outside", ["HAS 0"], 0),
-        ("cookie-show", ["HAS 0"], 0),
+        ("unlink-outside", ["THREW assignment to a pmem pointer outside a transaction",
+                            "HAS 1", "VALUES 10 20 30", "OFFSET 8", "OBJS 1"], 0),
+        ("alloc-outside", ["THREW allocation in the persistent pool outside a transaction",
+                           "HAS 1", "VALUES 10 20 30", "OFFSET 8", "OBJS 1"], 0),
+        ("delete-outside", [], -6),
+        ("cookie-show", ["HAS 1", "VALUES 10 20 30", "OFFSET 8"], 0),
     ],
     # Killed in HashTable's constructor after its bucket array is allocated:
     # only the root array, committed by an earlier run, is left.

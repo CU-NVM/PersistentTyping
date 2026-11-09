@@ -22,15 +22,17 @@
 // StaticLocal is a static local of any function, main included.
 enum class RootLinkage { External, Internal, StaticLocal };
 
-// A root is a persistent<...> object with static storage: a pmem slot, which
-// moves into __pers_root unchanged. What it holds:
-//   Scalar   persistent<persistent<T>*> r                -> one T
-//   Fixed    persistent<persistent<T>*> r[N]             -> N slots of T
-//   Dynamic  persistent<persistent<persistent<T>*>*> r   -> a pool array of
-//            slots of T, allocated by r = new persistent<persistent<T>*>[n]
+// A root is a persistent<...> object with static storage. Each gets a slot in
+// __pers_root, and the program reaches it only through that slot:
+//   Scalar   persistent<persistent<T>*> r                -> slot r, one T
+//   Fixed    persistent<persistent<T>*> r[N]             -> slots r[N]
+//   Dynamic  persistent<persistent<persistent<T>*>*> r   -> slot r, a pool array
+//            of slots of T, from r = new persistent<persistent<T>*>[n]
+//   Value    persistent<T> r                             -> slot r, one T that
+//            the program uses as *slot, so it is always created
 // Keeping N, or that n, the same across runs is the program's responsibility,
 // as with any other C++ array.
-enum class RootShape { Scalar, Fixed, Dynamic };
+enum class RootShape { Scalar, Fixed, Dynamic, Value };
 
 // One declaration of a root variable. A root usually has one definition and
 // any number of `extern` declarations in other files or headers.
@@ -48,37 +50,48 @@ struct RootDeclRecord {
     unsigned offset;
     unsigned length;
     std::string error;      // a problem only this declaration has
+    // The root's key, its qualified C++ name (closure doc 6.3): `x`, `a::x`,
+    // `(anonymous namespace)::x`, or `f(int)::cache` for a static local.
+    // Declarations with the same key are the same root.
+    std::string key;
 };
 
-// A statement that initialises a root, or one element of a root array (`r[i]
-// = ...`), recorded by file offset because a clang::SourceRange is only valid
-// inside its own TU. Either way the `new` runs only while the slot is null, so
-// a later run reuses what the first one made:
-//   Object   r = new persistent<T>(args)  -> pmem_get_or_create(slot, args)
+// How a root's definition creates its object, recorded by file offset because
+// a clang::SourceRange is only valid inside its own TU. The creation runs only
+// while the slot is null, so a later run reuses what the first one made:
+//   Object   r = new persistent<T>(args), or persistent<T> r(args)
+//                                         -> pmem_get_or_create(slot, args)
 //   Array    r = new X[n]                 -> in one transaction:
 //                                            if (!slot) slot = new X[n];
 // X is whatever the user wrote: persistent<T>, or persistent<persistent<T>*>
-// for a dynamic root array.
+// for a dynamic root array. Uses of other roots inside the copied text are
+// rewritten like any other use. A global's creation runs in its own
+// __pers_init_<field>(), and main() calls those first, each after the roots
+// its initializer uses. A static local's becomes the initializer of a static
+// flag, `static bool __pers_init_<field> = (creation, true);`, which C++ runs
+// once, when first reached. Any other `r = ...` is an ordinary assignment to
+// the slot.
 enum class InitKind { Object, Array };
 
 struct InitSiteRecord {
     InitKind kind;
     std::string typeName;
     std::string varName;
-    std::string rootKey;    // RootTable::mergeKey of the root it initializes
+    std::string rootKey;    // the key of the root it initializes
     std::string file;
     unsigned offset;        // the whole assignment, or the whole declaration
     unsigned length;
     std::string initArgs;   // Object: the constructor arguments
     std::string newText;    // Array: the user's `new X[n]`, as written
-    std::string index;      // the text of i in `r[i] = ...`, or empty
-    bool inDeclaration;     // `persistent<persistent<T>*> r = new ...;`
-    bool atFileScope;       // ... of a global, so it must stay a declaration
+    unsigned textOffset;    // where initArgs or newText starts in `file`
+    std::set<std::string> uses;   // keys of the roots the initializer uses
+    bool atFileScope;       // a global's: runs in __pers_init_<field>()
     std::string location;
 };
 
 // Any other mention of a root: `r` becomes __pers_get_root()->r, its slot,
-// which has the same type, so r[i], *r, r->f and &r need nothing else.
+// or (*__pers_get_root()->r) for a Value root. Either has the same type as
+// `r`, so r[i], *r, r->f, &r and r = ... need nothing else.
 struct UseRecord {
     std::string rootKey;
     std::string file;
@@ -115,14 +128,11 @@ struct RootTable {
     std::map<std::string, UseRecord> uses;
     std::map<std::string, RootTypeInfo> types;    // by type name
     std::map<std::string, unsigned> mainFiles;    // file -> offset where main() begins
+    std::map<std::string, unsigned> mainBodies;   // file -> offset just inside main's `{`
+    std::vector<std::string> tuFiles;             // each TU's file, in the order given
+    std::map<std::string, unsigned> tuSizes;      // TU file -> its length
     std::set<std::string> accessorFiles;          // files already defining __pers_get_root
     std::map<std::string, std::string> errors;    // location -> problem found while collecting
-
-    // The key a declaration merges under: its name for External roots, and
-    // file::name for roots that are private to one file.
-    static std::string mergeKey(const RootDeclRecord& d);
-    static std::string mergeKey(RootLinkage linkage, const std::string& file,
-                                const std::string& varName);
 
     // One entry per root, ordered by key. Every conflict between declarations
     // (type or shape mismatch, missing or repeated definition, two roots
@@ -149,9 +159,15 @@ class RootCollector {
 
 // Second half of root-setup, run once after every TU has been collected.
 // Writes <main>_pers_root.hpp next to the file with main(): the __pers_root
-// struct and the declaration of its accessor. Then rewrites the sources:
-//   - every root declaration is removed, or replaced by its init site
-//   - every init site and use becomes the root's slot, as described above
+// struct and the declarations of its accessor and init functions. Then
+// rewrites the sources:
+//   - every root declaration is removed, or, for a static local that creates
+//     its object, replaced by that creation
+//   - each global root that creates an object gets __pers_init_<field>()
+//     at the end of the file that defines it
+//   - main() calls those first, each after every root its initializer uses,
+//     otherwise in the order the files were given and then declared
+//   - every use becomes the root's slot, as described above
 //   - every file it rewrites includes the header
 //   - __pers_get_root() is defined once, just before main()
 // Files that root-setup has already rewritten (main() already has

@@ -1,0 +1,5 @@
+# `r = new ...` outside a declaration is an ordinary assignment to the slot,
+# not a get-or-create: it runs, and allocates, on every run.
+in main.cpp: void record(int v) { __pers_get_root()->latest = new persistent<int>(v); }
+notin main.cpp: pmem_get_or_create
+out: latest {n} objs {n}

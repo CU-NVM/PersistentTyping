@@ -11,8 +11,10 @@ static int sum(persistent<persistent<int>*>* all, int n) {
 }
 
 int main() {
-    slots[0] = new persistent<int>(1);
-    slots[1] = new persistent<int>(2);
+    pmem::obj::transaction::run(pmem_pool(), [&] {
+        if (!slots[0]) slots[0] = new persistent<int>(1);
+        if (!slots[1]) slots[1] = new persistent<int>(2);
+    });
     bump(slots[0], "s0");
     std::cout << "sum " << sum(slots, 2) << "\n";
 }

@@ -1,8 +1,9 @@
-# A dynamic root array: `counters = new persistent<persistent<int>*>[n]` allocates the
-# slot array only while the root is still null, in one transaction.
+# A dynamic root array created in its declaration: __pers_init_counters()
+# allocates the slot array only while the root is still null, in one
+# transaction; the program fills the slots itself.
 header: pmem_ptr<pmem_ptr<persistent<int>>> counters;
 in main.cpp: if (!__pers_get_root()->counters) __pers_get_root()->counters = new persistent<persistent<int>*>[n];
-in main.cpp: pmem_get_or_create<persistent<int>>(__pers_get_root()->counters[i], 100 * i);
+in main.cpp: if (!__pers_get_root()->counters[i]) __pers_get_root()->counters[i] = new persistent<int>(100 * i);
 in main.cpp: bump(__pers_get_root()->counters[i], "c");
 out: c {n}
 out: c {n+100}

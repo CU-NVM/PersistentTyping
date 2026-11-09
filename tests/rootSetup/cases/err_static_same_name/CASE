@@ -1,0 +1,7 @@
+# Two file-private (`static`) roots with the same qualified name in different
+# files are different variables that one key cannot tell apart: an error
+# (closure doc 6.3), instead of keying them by file name, which would break
+# when a file is renamed.
+expect: fail
+error: roots named 'counter' in
+error: are different variables with the same name; rename one

@@ -1,0 +1,6 @@
+# a::x and b::x are different variables: their keys are their qualified
+# names, so they are two roots with two fields, not one shared slot.
+dump: == roots: 2 ==
+header: pmem_ptr<persistent<int>> a__x;
+header: pmem_ptr<persistent<int>> b__x;
+out: a {n+1} b {10n+2}

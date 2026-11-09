@@ -1,6 +1,6 @@
-# A slot may hold an array, as in C++: `buf = new persistent<int>[3]` and
-# `rows[i] = new persistent<int>[4]`. The user's new[] runs only while the slot
-# is null, so later runs reuse the arrays (3 objects on every run).
+# A slot may hold an array, as in C++: `buf`'s declaration creates one with
+# new persistent<int>[3], only while the slot is null, and the program fills
+# `rows[i]` the same way itself. Later runs reuse the arrays (3 objects).
 in main.cpp: if (!__pers_get_root()->buf) __pers_get_root()->buf = new persistent<int>[3];
 in main.cpp: if (!__pers_get_root()->rows[i]) __pers_get_root()->rows[i] = new persistent<int>[4];
 out: buf {n} row {n}

@@ -1,7 +1,7 @@
-# A fixed root array: three slots in __pers_root, each filled with
-# get-or-create, so the counters behind them are reread on every run.
+# A fixed root array: three slots in __pers_root. The program fills them
+# itself, only while null, so the counters behind them are reread on every run.
 header: pmem_ptr<persistent<int>> slots[3];
-in main.cpp: pmem_get_or_create<persistent<int>>(__pers_get_root()->slots[i], i * 10);
+in main.cpp: if (!__pers_get_root()->slots[i]) __pers_get_root()->slots[i] = new persistent<int>(i * 10);
 in main.cpp: bump(__pers_get_root()->slots[i], "slot");
 notin main.cpp: persistent<persistent<int>*> slots[3];
 out: slot {n}

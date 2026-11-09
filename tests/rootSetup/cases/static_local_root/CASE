@@ -1,5 +1,8 @@
 # A static local of a free function has a single copy for the program, so
-# it is a root too.
-header: c;
-in main.cpp: return __pers_get_root()->c;
+# it is a root too, keyed calls()::c (field calls__c). Its declaration becomes a static flag whose initializer
+# creates the object; C++ runs that initializer once, when first reached, so
+# later calls skip it. Its uses are the slot, as for a global.
+header: calls__c;
+in main.cpp: [[maybe_unused]] static bool __pers_init_calls__c = (pmem_get_or_create<persistent<int>>(__pers_get_root()->calls__c, 0), true);
+in main.cpp: return __pers_get_root()->calls__c;
 out: calls {n}

@@ -1,4 +1,4 @@
-# An anonymous-namespace global: internal linkage, like `static`, so its
-# field is prefixed with the file.
-header: main__hits
+# An anonymous-namespace global: its key is (anonymous namespace)::hits,
+# and its field anon__hits.
+header: anon__hits
 out: hits {n}

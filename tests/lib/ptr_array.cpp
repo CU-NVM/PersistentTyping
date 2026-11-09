@@ -21,6 +21,8 @@
 //   cookie-show      print the Tracked array
 //   cookie-delete    delete[] the Tracked array
 //   unlink-outside   null the Tracked root slot outside any transaction
+//   alloc-outside    new persistent<int> outside any transaction
+//   delete-outside   delete[] the Tracked array outside any transaction
 //   delete-all       delete every node, bucket array, table and the root array
 
 #include "persistenttype.hpp"
@@ -235,11 +237,20 @@ int main(int argc, char** argv) {
         });
         std::cout << "OBJS " << before << " " << object_count() << "\n";
         print_tracked();
-    } else if (mode == "unlink-outside") {
-        // A slot in pmem assigned outside any transaction: the assignment
-        // runs in a transaction of its own, so it is logged and it sticks.
-        root()->tracked = nullptr;
+    } else if (mode == "unlink-outside" || mode == "alloc-outside") {
+        // Writes and allocations need the caller's transaction; outside one
+        // they throw, and the pool is left as it was.
+        try {
+            if (mode == "unlink-outside") root()->tracked = nullptr;
+            else new persistent<int>(1);
+        } catch (const std::exception& e) {
+            std::cout << "THREW " << e.what() << "\n";
+        }
         print_tracked();
+        std::cout << "OBJS " << object_count() << "\n";
+    } else if (mode == "delete-outside") {
+        // operator delete cannot throw, so the error stops the program.
+        delete[] root()->tracked.get();
     } else if (mode == "delete-all") {
         int before = object_count();
         pmem::obj::transaction::run(pmem_pool(), [&]() {

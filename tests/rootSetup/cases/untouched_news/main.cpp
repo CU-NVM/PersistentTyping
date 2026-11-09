@@ -2,7 +2,7 @@
 
 struct Holder { persistent<int>* p; };
 
-persistent<persistent<int>*> root;
+persistent<persistent<int>*> root = new persistent<int>(0);
 
 // Never called: these allocations sit outside a transaction. They are here
 // only to check root-setup leaves them alone.
@@ -16,6 +16,5 @@ void never_called(persistent<int>* param) {
 }
 
 int main() {
-    root = new persistent<int>(0);
     bump(root, "root");
 }

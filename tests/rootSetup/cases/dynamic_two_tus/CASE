@@ -1,4 +1,4 @@
-# A dynamic root array defined in a.cpp, declared in a header, allocated and
+# A dynamic root array defined and allocated in a.cpp, declared in a header,
 # filled in main.cpp and used in both files.
 header: pmem_ptr<pmem_ptr<persistent<int>>> counters;
 in a.cpp: bump(__pers_get_root()->counters[i], "a");
