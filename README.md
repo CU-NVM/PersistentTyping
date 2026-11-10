@@ -42,11 +42,16 @@ The result is a binary that:
                                                pmem_root, pmem_alloc/free.
 
   persist-clang-tool/    The Clang tool (LibTooling) that does the rewriting.
-                           src/actions, src/consumer, src/transformer
-                           src/transformer/recursePersistentTyper.{h,cc}
-                           src/transformer/rootSetup.{h,cc}
-                           src/transformer/visitors.{h,cc}
-                           src/utils/utils.{h,cc}
+                           src/main.cc        runs the passes (--pass=...)
+                           src/passes/<pass>/ one folder per pass, each with
+                                              its <pass>Action.{h,cc} (Clang's
+                                              action and consumer):
+                             checkPersistentTypes/
+                             rootSetup/        rootTable, rootCollector, rootEmitter
+                             recursePersistent/ specializationBuilder,
+                                                memberPersistifier
+                           src/utils/typeTranslation.{h,cc}  P(T) and L(T)
+                           src/utils/utils.{h,cc}            shared helpers
                          Built via CMake.
 
   counter/  stack/       Source benchmarks (user-written form).

@@ -1,0 +1,5 @@
+# A read-only method runs outside any transaction without throwing, and a
+# writing one still brings its own, so the count persists across runs.
+in counter.hpp: int read() const /* read-only: no transaction */
+notin counter.hpp: void bump() /* read-only
+out: value {n}

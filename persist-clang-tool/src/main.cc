@@ -7,12 +7,11 @@
 #include <llvm/Support/FileSystem.h>
 #include <llvm/Support/Path.h>
 #include "llvm/Support/raw_ostream.h"
-#include "actions/recurseFrontendAction.h"
-#include "actions/checkPersistentTypesFrontendAction.h"
-#include "actions/rootSetupFrontendAction.h"
-#include "transformer/rootSetup.h"
+#include "passes/checkPersistentTypes/checkPersistentTypesAction.h"
+#include "passes/rootSetup/rootSetupAction.h"
+#include "passes/rootSetup/rootEmitter.h"
+#include "passes/recursePersistent/recursePersistentAction.h"
 #include "utils/utils.h"
-// #include "actions/castFrontendAction.h"  // disabled: source not in build
 #include <set>
 #include <string>
 #include <vector>
@@ -31,8 +30,7 @@ static const llvm::StringRef AllPasses[] = {"check-persistent-types", "root-setu
 static std::unique_ptr<FrontendActionFactory>
 makeFactoryForPass(llvm::StringRef Name) {
   return llvm::StringSwitch<std::unique_ptr<FrontendActionFactory>>(Name)
-    .Case("recurse-persistent", newFrontendActionFactory<RecurseFrontendAction>())
-    // .Case("cast",    newFrontendActionFactory<CastFrontendAction>())  // disabled
+    .Case("recurse-persistent", newFrontendActionFactory<RecursePersistentFrontendAction>())
     .Default(nullptr);
 }
 

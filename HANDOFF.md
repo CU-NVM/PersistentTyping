@@ -21,6 +21,33 @@ All three PDFs are available in the project root for re-reading.
 
 ## What's been done so far
 
+**recurse-persistent split into shape and member code; P and L in their own file; NUMA code removed (2026-11-10)**
+
+- Removed every NUMATyping leftover: `numafy.py`, `Exprs/`, `Histogram/`, `unified-memory-framework/`, `IntelMLC/`, and the unbuilt NUMA sources in the clang tool (`RecursiveNumaTyper`, `NumaTargetNumaPointer`, `CastNumaAlloc`, `numafy/`, `casting/`, `inclusiondirective/`, the cast actions and consumers), and `Transformer` (`transformer/transformer.{h,cc}`), their base class, which no pass used but was still compiled.
+- Sources are grouped by pass: `src/passes/<pass>/`, replacing `actions/`, `consumer/` and `transformer/` (the last named after that dead base class). Each pass's frontend action and AST consumer (about 20 lines each) share one `<pass>Action.{h,cc}`. root-setup's 804-line `rootSetup.cc` is split along its existing sections into `rootTable.{h,cc}` (the records and their merge/print), `rootCollector.{h,cc}` (step 1, per TU) and `rootEmitter.{h,cc}` (step 2, once); the one helper both halves used is now `rootFieldDeclaration` in `rootTable.h`. `actionsHelp.md` and `consumersHelp.md` are in `src/passes/`. `passes/` rather than `persistifier/`: check-persistent-types persistifies nothing, and the CLI, `main.cc` and the docs already call them passes.
+- recurse-persistent is now two classes:
+  - `SpecializationBuilder` (`specializationBuilder.{h,cc}`, was `RecursePersistentTyper`) decides each specialization's shape: worklist, field types, signatures, operator new/delete, insertion. `buildSpecialization` / `buildMethod` (were `processClass` / `processMethod`); `queueSpecialization` and `queueSignatureClasses` (were `specializeType` / `specializeSignatureTypes`, which only ever queued).
+  - `MemberPersistifier` (`memberPersistifier.{h,cc}`) persistifies the code inside: `persistifyDefinition(method)` for method and constructor bodies and initializer lists, `persistifyDefaultMemberInit(field)`, the read-only check `isReadOnlyMethod`, the transaction wrap. The three rewriters (`NewExprRewriter`, `LocalTypeRewriter`, `CStringRewriter`, formerly `visitors.{h,cc}`) live in its `.cc` in an anonymous namespace, like the other passes' visitors, and report the classes they reach through a `QueueSpecializationFn` callback.
+  - Naming: "persistify" is the purpose; "rewriter" is kept for the classes that actually edit text (a scratch copy of the original code). Rewriting edits existing text; emitting produces new text (the specs, root-setup's header). Every writing pass does both, so there is no `rewriters/` folder.
+- P and L (`TypeTranslation`, `translateType`, `translateDramRef`, `signatureType`, `wrapFieldType`, `buildMethodSignature`, `className`) moved from `utils/utils.{h,cc}` to `utils/typeTranslation.{h,cc}`, still in namespace `utils`.
+- `start()` is `run()` on all three passes; `RecurseFrontendAction` / `RecurseConsumer` are `RecursePersistentFrontendAction` / `RecursePersistentConsumer`, like the other two passes.
+- Considered and rejected: making the member code its own pass. Reachability goes through bodies (`new Helper` reaches `Helper`), so the shape pass would still have to read them, and the two passes would need a text-level protocol (matching spec methods to originals, markers on generated specs) that one pass gets for free.
+- Pure refactor: every file the test suites and the eight benchmarks generate is byte-identical to before; all 81 tests and the 86 `translate-type-test` checks pass.
+- `.gitignore`'s `*.txt` had kept both `CMakeLists.txt` out of git, so a fresh clone could not build the tool; `!CMakeLists.txt` now lets them in. Its lines for the removed NUMA folders are gone.
+
+**Read-only methods run without a transaction (2026-11-09, closure to-do #16, methods half)**
+
+- `MemberPersistifier::isReadOnlyMethod(method)` (`RecursePersistentTyper::checkIfReadOnlyMember` until 2026-11-10) decides, on the body as written, whether a method can write persistent data. `MemberPersistifier::persistifyDefinition` calls it before `wrapInTransaction`; a read-only method's body is emitted as is, marked `/* read-only: no transaction */`.
+- Not read-only (conservative): W1 a write to anything but a plain local (or a member/element of one; `isDramLocal`), even in a `const` method, since `const` does not protect pointees; W2 `new`/`delete`; W3 a call of a persistent class's method that is not read-only (memoised; a direct recursive call is allowed, an indirect cycle counts as a write); W4 a pointer to non-const or a non-const reference handed to any other function. Constructors and destructors always keep their transaction; methods with no visible body count as writing.
+- The library's `pmem_require_tx` is the backstop: if the analysis were wrong, the first pmem write outside a transaction throws.
+- YCSB: `get` (which writes only the local `sink`) and `hash` become read-only; `insert` and `update` keep their transactions. A million `get`s took 1.49 s instead of 1.65 s (about 10%) on emulated pmem; real pmem, where a commit flushes and fences, is not measured.
+- New suite `tests/recursePersistent` (the checkPersistentTypes runner, defaulting to `--pass=all`): `read_only_methods` (one method per rule) and `read_only_no_transaction_needed`.
+- The free-function half of #16 waits on the free-function work (#13-#15).
+
+**`run.py` never runs a changed program on an old pool (2026-11-09)**
+
+- After building, `run.py` compares a SHA-256 of the binary with the one recorded in `<pool>.build` and wipes the pool if they differ (or with `--fresh`). A pool's bytes follow one build's layouts, so this stands in for the layout hash (#17, deferred) in the benchmark workflow. It also covers switching benchmarks, which share one pool path. A change that leaves the binary identical (a comment) keeps the pool.
+
 **Root keys are qualified names (2026-11-09, closure to-do #7)**
 
 - A root's key is its qualified C++ name (`rootKeyOf`, stored as `RootDeclRecord::key`): `x`, `a::x`, `(anonymous namespace)::x`, or, for a static local, its function's name with parameter types, `f(int)::cache`. `RootTable::mergeKey`, which keyed file-private roots by file name, is gone.

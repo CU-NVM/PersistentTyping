@@ -1,6 +1,0 @@
-{
-   Race in libjemalloc.so  - internal issue of libjemalloc
-   Helgrind:Race
-   obj:*libjemalloc.so*
-   ...
-}

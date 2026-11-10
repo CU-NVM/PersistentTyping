@@ -8,11 +8,16 @@ Output/<benchmark>/.
 Usage:
     ./run.py <benchmark>            # compile + run once
     ./run.py <benchmark> --fresh    # wipe pmem pool first (test first-run)
+
+The pool is also wiped, without --fresh, when the built program differs from
+the one that last used it: a pool's bytes follow one build's class layouts, so
+a changed program (or another benchmark) must not read an old pool.
     ./run.py <benchmark> --runs N   # run N times in succession
     ./run.py <benchmark> -- ARGS    # pass ARGS to the benchmark binary
 """
 
 import argparse
+import hashlib
 import os
 import shutil
 import subprocess
@@ -23,6 +28,8 @@ ROOT           = Path(__file__).resolve().parent
 OUTPUT_DIR     = ROOT / "Output"
 PERSISTENT_LIB = ROOT / "persistentLib"
 PMEM_POOL_PATH = "/mnt/pmem-emu/global_persistent_pool"
+# Fingerprint of the binary that last used the pool, kept next to it.
+POOL_BUILD     = PMEM_POOL_PATH + ".build"
 
 
 BENCHMARKS = {
@@ -116,10 +123,13 @@ def main() -> None:
 
     compile_benchmark(name, bm, bench_dir)
 
-    if args.fresh:
-        if os.path.exists(PMEM_POOL_PATH):
-            os.remove(PMEM_POOL_PATH)
-            print(f"  wiped {PMEM_POOL_PATH}")
+    built = hashlib.sha256((bench_dir / bm["binary"]).read_bytes()).hexdigest()
+    previous = Path(POOL_BUILD).read_text().strip() if os.path.exists(POOL_BUILD) else None
+    if os.path.exists(PMEM_POOL_PATH) and (args.fresh or previous != built):
+        os.remove(PMEM_POOL_PATH)
+        reason = "--fresh" if args.fresh else "the program changed since the pool was written"
+        print(f"  wiped {PMEM_POOL_PATH} ({reason})")
+    Path(POOL_BUILD).write_text(built + "\n")
 
     for i in range(args.runs):
         if args.runs > 1:

@@ -1,9 +1,0 @@
-{
-  "name": "main",
-  "version-string": "1.0.0",
-  "dependencies": [
-    "hwloc",
-    "jemalloc",
-    "tbb"
-  ]
-}

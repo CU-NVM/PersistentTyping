@@ -16,7 +16,8 @@ using namespace std;
 using namespace ycsbc;
 using namespace std::chrono;
 
-persistent<HashTable>** ht;
+// The root: a pmem slot holding a pool array of slots, one per table.
+persistent<persistent<persistent<HashTable>*>*> ht;
 
 std::vector<int64_t> globalOps;
 
@@ -33,10 +34,14 @@ void hash_table_init(int buckets,
                      int payload_size)
 {
     // ------------------ ALLOCATION ------------------
-    ht = new persistent<HashTable>*[num_tables];
-    for(int i = 0; i < num_tables; i++) {
-        ht[i] = new persistent<HashTable>(buckets);
-    }
+    // num_tables comes from the command line, so the arrays are created here
+    // rather than in ht's declaration. Only while null: a later run on the same
+    // pool reuses its tables. Allocations and slot writes need a transaction.
+    pmem::obj::transaction::run(pmem_pool(), [&] {
+        if (!ht) ht = new persistent<persistent<HashTable>*>[num_tables];
+        for (int i = 0; i < num_tables; i++)
+            if (!ht[i]) ht[i] = new persistent<HashTable>(buckets);
+    });
     // ------------------ SANITY CHECK ------------------
     for (int i = 0; i < num_tables; i++) {
         if (ht[i] == nullptr) {

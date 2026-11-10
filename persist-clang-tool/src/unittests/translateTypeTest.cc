@@ -9,6 +9,7 @@
 // usage: translate-type-test [-v]
 
 #include "../utils/utils.h"
+#include "../utils/typeTranslation.h"
 #include <clang/Frontend/ASTUnit.h>
 #include <clang/Tooling/Tooling.h>
 #include <cstring>

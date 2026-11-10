@@ -1,0 +1,20 @@
+# The read-only exemption (closure doc 8.2): a method that cannot write
+# persistent data gets no transaction. Each method below is aimed at one rule:
+# writes only to locals (get, longest, histogram), a direct recursive call
+# (chain) and a call of a read-only method (hash) are read-only; a write
+# through a pointer even in a const method (unlink_first, W1), new (insert,
+# W2), a call of a writing method (update, touch: W3) and a pmem pointer
+# handed to memset (wipe, W4) keep the transaction.
+flags: -std=c++20
+in table.hpp: int hash(uint64_t key) /* read-only: no transaction */
+in table.hpp: bool get(uint64_t key, int payload) /* read-only: no transaction */
+in table.hpp: int chain(persistent<HashNode>* c) /* read-only: no transaction */
+in table.hpp: int longest() const /* read-only: no transaction */
+in table.hpp: int histogram() /* read-only: no transaction */
+count table.hpp 5: /* read-only: no transaction */
+notin table.hpp: bool insert(uint64_t key, int payload) /* read-only
+notin table.hpp: bool update(uint64_t key, int payload) /* read-only
+notin table.hpp: void unlink_first(int b) const /* read-only
+notin table.hpp: void wipe(int b) /* read-only
+notin table.hpp: void touch(uint64_t k) /* read-only
+out: get 1 miss 0 longest 3 hist 2

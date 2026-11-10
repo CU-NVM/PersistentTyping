@@ -111,5 +111,6 @@
         "utils_examples.h": "c",
         "mempolicy.h": "c"
     },
-    "cmake.sourceDirectory": "/home/kidus/PersistentTyping/numa-clang-tool"
+    "cmake.sourceDirectory": "${workspaceFolder}/persist-clang-tool",
+    "cmake.buildDirectory": "${workspaceFolder}/persist-clang-tool/build"
 }

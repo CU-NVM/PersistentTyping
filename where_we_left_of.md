@@ -8,6 +8,7 @@ uncommitted** in the working tree (about 70 files). All suites pass:
 (cd tests/lib && ./run_tests.py)                                         # 17/17
 (cd tests/checkPersistentTypes && ./run_tests.py)                        # 12/12
 (cd tests/rootSetup && ./run_tests.py --e2e)                             # 50/50
+(cd tests/recursePersistent && ./run_tests.py)                           # 2/2
 ```
 
 The thesis repo (`~/thesis`) has unpushed `design.md` commits; push them when
@@ -37,6 +38,12 @@ and two file-private roots with the same name in different files, or a static
 local of a lambda, are errors. This fixes `a::x`/`b::x` and same-named static
 locals silently sharing one slot. Details in `HANDOFF.md`.
 
+## Read-only methods: done (2026-11-09)
+
+Methods that cannot write persistent data (`MemberPersistifier::isReadOnlyMethod`
+in recurse-persistent) run without a transaction; YCSB's `get` is one. The
+free-function half of #16 waits on #13-#15. Details in `HANDOFF.md`.
+
 ## After that (closure document §14)
 
 - **#19** Respell the `persistify.py` benchmarks (counter, stack, hanoi, kvstr,
@@ -50,7 +57,10 @@ locals silently sharing one slot. Details in `HANDOFF.md`.
 - **#13** The free-function parse fix (unblocks #14 to #16 and #18). Until then,
   a free function cannot walk pmem data before the transform: `p->next` is a
   `Node*`.
-- **#17** Layout hash (#7 is done, so this is unblocked).
+- **#17** Layout hash: **deferred**, it does not affect benchmarking. It matters for
+  invariant I6 (soundness argument) later. Meanwhile `run.py` wipes the pool
+  whenever the built program differs from the one that last used it (fingerprint
+  in `<pool>.build`), so a changed benchmark never reads an old pool.
 
 ## Known gaps to remember
 

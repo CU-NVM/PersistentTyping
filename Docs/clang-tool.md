@@ -24,16 +24,25 @@ runs, in order:
 |---|---|---|
 | `check-persistent-types` | every `persistent<...>` / `pmem_ptr<...>` the user wrote | checks it and rewrites nothing. Errors: a pmem pointer to a non-persistent target (`persistent<HashNode*>`, rule 2), one layer wrapped twice (`persistent<persistent<int>>`), `persistent<T[N]>`, and a pmem pointer to `void` or a function. The later passes read types by canonical form, so `persistent<persistent<HashNode>*>` and `pmem_ptr<persistent<HashNode>>` need no rewriting. |
 | `root-setup` | root declarations (the outer `*`, `[N]`, `**`), root init sites, root uses | writes `<main>_pers_root.hpp` with `struct __pers_root`; every root becomes its slot there (see below) |
-| `recurse-persistent` | field types of every class reachable from `__pers_root`, and the `new`s, locals and signatures in its methods | emits `template<> class persistent<C>` after the outermost namespace or class enclosing C; wraps method bodies in transactions; marks each finished file `PERSIST_TRANSFORMED` |
+| `recurse-persistent` | field types of every class reachable from `__pers_root`, and the `new`s, locals and signatures in its methods | emits `template<> class persistent<C>` after the outermost namespace or class enclosing C; wraps method bodies in transactions, except read-only ones; marks each finished file `PERSIST_TRANSFORMED` |
 
 check-persistent-types and root-setup collect from every translation unit
 first and report or rewrite once afterwards, so a header shared by several
 TUs is handled once. Every pass writes nothing if it reports an error, and exits
 non-zero.
 
+Each pass has its own folder, `src/passes/<pass>/`, whose `<pass>Action.{h,cc}`
+holds Clang's frontend action and AST consumer for it (see
+`src/passes/actionsHelp.md` and `consumersHelp.md`). root-setup's two steps are
+`rootCollector.{h,cc}` and `rootEmitter.{h,cc}`, sharing the records in
+`rootTable.{h,cc}`. What several passes need is in `src/utils/`:
+`typeTranslation.{h,cc}` (P and L) and `utils.{h,cc}`.
+
 ### One translation, P
 
-`utils::translateType(QualType)` is the only implementation of P. It returns
+`utils::translateType(QualType)`, in `src/utils/typeTranslation.{h,cc}`
+with L and the signature and field spellings built on them, is the only
+implementation of P. It returns
 the spelling (prefix and suffix, so an array's bounds go after the name),
 the classes reached, and any error.
 
@@ -55,6 +64,21 @@ L(U\*) = P(U)\* and L(U&) = P(U)&. Locals, parameters, return values and
 
 ### recurse-persistent, method by method
 
+The pass is two classes. `SpecializationBuilder`
+(`src/passes/recursePersistent/specializationBuilder.{h,cc}`) decides each
+specialization's **shape**: the worklist from `__pers_root`, field types,
+signatures, operator new/delete, and where the spec is inserted
+(`buildSpecialization`, `buildMethod`, `queueSpecialization`).
+`MemberPersistifier` (`src/passes/recursePersistent/memberPersistifier.{h,cc}`)
+persistifies the **code inside it**: method and constructor bodies and
+initializer lists (`persistifyDefinition`), default member initializers
+(`persistifyDefaultMemberInit`), the read-only check (`isReadOnlyMethod`) and
+the transaction wrap. Its three rewriters (`NewExprRewriter`,
+`LocalTypeRewriter`, `CStringRewriter`, in an anonymous namespace in its
+`.cc`) edit a scratch copy of the *original* class's code and report every
+class it reaches back to the worklist through a callback, so `new Helper` in a
+method still gets `Helper` specialized.
+
 - **Fields:** `P(T) name[N]` via `wrapFieldType`.
 - **`new T(args)` / `new T[n]`:** become `new P(T)(args)` / `new P(T)[n]`.
   So `new HashNode*[n]` becomes `new pmem_ptr<persistent<HashNode>>[n]`.
@@ -66,6 +90,20 @@ L(U\*) = P(U)\* and L(U&) = P(U)&. Locals, parameters, return values and
 - **C strings:** arguments that point into a pmem `char` array are wrapped in
   `persist_detail::chars` (reads) or `persist_detail::writable` (writes, logged
   first). See PersistentLib.md, "C strings".
+- **Transactions:** every method body runs in a transaction, **except read-only
+  methods** (closure doc §8.2, `MemberPersistifier::isReadOnlyMethod`), which get
+  `/* read-only: no transaction */` instead. Judged on the body as written,
+  conservatively; a method is *not* read-only if it
+  - W1 writes (`=`, `op=`, `++`, `--`) anything but a plain local (or a member or
+    element of one): `size++`, `c->next = n`, `*p = 1`, even in a `const` method;
+  - W2 uses `new` or `delete`;
+  - W3 calls a persistent class's method that is not read-only (recursively; a
+    direct recursive call is fine, an indirect cycle counts as a write);
+  - W4 hands a pointer to non-const or a non-const reference to any other
+    function (`memset(value, …)`).
+  Constructors and destructors always keep their transaction. If the analysis
+  were wrong, the library still throws on the first pmem write outside a
+  transaction. YCSB's `get` and `hash` are read-only.
 - **Errors:** overloaded operators, base-class initializers, string literals
   stored in pmem pointers, and calls that write through `char*` that cannot be
   logged. Before, overloaded operators were silently dropped.
@@ -149,6 +187,7 @@ the specialisation (`findExistingPersistentSpecs`) and skips the class.
 | `tests/lib` | `./run_tests.py` | library alone: type identity, compile errors, two runs, cookies, `delete[]`, four crash points, slot assignment outside a transaction |
 | `tests/checkPersistentTypes` | `./run_tests.py` | legal spellings, every position, shared headers, rule-2 / double-wrap / array / void / alias errors |
 | `tests/rootSetup` | `./run_tests.py [--e2e]` | roots in the slot spelling and by value, root arrays, static locals, creation in `__pers_init_<root>()` and its dependency order, assignments as stores, option b across TUs, the root errors, a crash during root-array allocation |
+| `tests/recursePersistent` | `./run_tests.py` | end to end (`--pass=all`): the read-only exemption, rule by rule; read-only methods running outside any transaction |
 
 The old `tests/constructors` and `tests/pointers` suites were written for the
 old root spelling and were deleted on 2026-11-08; new end-to-end tests are
@@ -343,6 +382,9 @@ when 5.1 is working.
 ---
 
 ## Architectural note: where this tool lives
+
+(Historical. The NUMA files named below were removed from this repo on
+2026-11-10; the current layout is under "recurse-persistent, method by method".)
 
 The Clang infrastructure already exists in `~/PersistentTyping/numa-clang-tool/`.
 Phase 5 extends that codebase rather than starting fresh. Key existing files
